@@ -1,0 +1,37 @@
+{
+  "analysisVersion": 1,
+  "rooms": [
+    {
+      "id": "kitchen",
+      "name": "Kitchen",
+      "dimensionsText": "12'-4\" × 17'-10\"",
+      "polygon": [
+        { "x": 0.55, "y": 0.42 },
+        { "x": 0.82, "y": 0.42 },
+        { "x": 0.82, "y": 0.68 },
+        { "x": 0.55, "y": 0.68 }
+      ]
+    }
+  ],
+  "furniture_catalog": [
+    {
+      "id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+      "name": "Kitchen island",
+      "width_mm": 1200,
+      "depth_mm": 800,
+      "height_mm": 750,
+      "image_2d_url": "https://placehold.co/120x80/png?text=Island",
+      "model_3d_url": null
+    }
+  ],
+  "furniture": [
+    {
+      "catalogId": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+      "x": 0.62,
+      "y": 0.52,
+      "rotationDeg": 0,
+      "scale": 0.08,
+      "zIndex": 2
+    }
+  ]
+}

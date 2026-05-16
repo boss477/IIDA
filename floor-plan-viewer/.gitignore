@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+.env.local
+lm_studio.local.json
+.DS_Store

@@ -1,0 +1,20 @@
+{
+  "name": "floor-plan-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "npm run build && python app.py",
+    "dev": "npm start",
+    "build": "vite build",
+    "preview": "vite preview",
+    "analyze-server": "node server.mjs"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "^0.0.7",
+    "@supabase/supabase-js": "^2.49.1",
+    "gsap": "^3.15.0"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
+  }
+}

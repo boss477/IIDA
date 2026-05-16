@@ -1,0 +1,9 @@
+:root {
+  --hi: rgba(255, 200, 64, 0.55);
+  --ink: #0f172a;
+  --bar-bg: #fff;
+  --bar-border: #cbd5e1;
+  --stage-bg: #e8eaed;
+  --viewport-bg: #fff;
+  --plan-chrome: #f1f5f9;
+}

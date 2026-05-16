@@ -1,0 +1,433 @@
+{
+  "analysisVersion": 4,
+  "label": "Digitized apartment (reference-floor.png) — polygons tiled, no overlap; doors as openings",
+  "rooms": [
+    {
+      "id": "master",
+      "name": "M. Bed room",
+      "type": "master_bedroom",
+      "dimensions": "≈3.50 m (primary wall)",
+      "polygon": [
+        { "x": 0.028, "y": 0.105 },
+        { "x": 0.398, "y": 0.105 },
+        { "x": 0.398, "y": 0.362 },
+        { "x": 0.028, "y": 0.362 }
+      ]
+    },
+    {
+      "id": "bed2",
+      "name": "Bed room",
+      "type": "bedroom",
+      "dimensions": "≈3.50 m (primary wall)",
+      "polygon": [
+        { "x": 0.602, "y": 0.105 },
+        { "x": 0.972, "y": 0.105 },
+        { "x": 0.972, "y": 0.362 },
+        { "x": 0.602, "y": 0.362 }
+      ]
+    },
+    {
+      "id": "bath1",
+      "name": "Bathroom 1",
+      "type": "bathroom",
+      "dimensions": "WC + shower",
+      "polygon": [
+        { "x": 0.402, "y": 0.075 },
+        { "x": 0.498, "y": 0.075 },
+        { "x": 0.498, "y": 0.192 },
+        { "x": 0.402, "y": 0.192 }
+      ]
+    },
+    {
+      "id": "bath2",
+      "name": "Bathroom 2",
+      "type": "bathroom",
+      "dimensions": "WC + shower",
+      "polygon": [
+        { "x": 0.502, "y": 0.075 },
+        { "x": 0.598, "y": 0.075 },
+        { "x": 0.598, "y": 0.192 },
+        { "x": 0.502, "y": 0.192 }
+      ]
+    },
+    {
+      "id": "passage",
+      "name": "Passage",
+      "type": "circulation",
+      "dimensions": "3.96 m × 2.29 m (9.1 m²)",
+      "polygon": [
+        { "x": 0.398, "y": 0.192 },
+        { "x": 0.602, "y": 0.192 },
+        { "x": 0.602, "y": 0.508 },
+        { "x": 0.398, "y": 0.508 }
+      ]
+    },
+    {
+      "id": "kitchen",
+      "name": "Kitchen",
+      "type": "kitchen",
+      "dimensions": "Counter + dining nook",
+      "polygon": [
+        { "x": 0.128, "y": 0.465 },
+        { "x": 0.398, "y": 0.465 },
+        { "x": 0.398, "y": 0.718 },
+        { "x": 0.128, "y": 0.718 }
+      ]
+    },
+    {
+      "id": "dining",
+      "name": "Dining",
+      "type": "dining",
+      "dimensions": "7.1 m² (approx.)",
+      "polygon": [
+        { "x": 0.398, "y": 0.528 },
+        { "x": 0.628, "y": 0.528 },
+        { "x": 0.628, "y": 0.792 },
+        { "x": 0.398, "y": 0.792 }
+      ]
+    },
+    {
+      "id": "living",
+      "name": "Living room",
+      "type": "living",
+      "dimensions": "3.35 m × 4.06 m",
+      "polygon": [
+        { "x": 0.628, "y": 0.405 },
+        { "x": 0.938, "y": 0.405 },
+        { "x": 0.938, "y": 0.905 },
+        { "x": 0.628, "y": 0.905 }
+      ]
+    },
+    {
+      "id": "utility",
+      "name": "Utility",
+      "type": "utility",
+      "dimensions": "1.29 m × 2.44 m (3.2 m²)",
+      "polygon": [
+        { "x": 0.022, "y": 0.495 },
+        { "x": 0.122, "y": 0.495 },
+        { "x": 0.122, "y": 0.728 },
+        { "x": 0.022, "y": 0.728 }
+      ]
+    },
+    {
+      "id": "bal_m",
+      "name": "Balcony (master)",
+      "type": "balcony",
+      "dimensions": "1.77 m × 1.74 m (3.1 m²)",
+      "polygon": [
+        { "x": 0.065, "y": 0.018 },
+        { "x": 0.348, "y": 0.018 },
+        { "x": 0.348, "y": 0.098 },
+        { "x": 0.065, "y": 0.098 }
+      ]
+    },
+    {
+      "id": "bal_r",
+      "name": "Balcony (bedroom)",
+      "type": "balcony",
+      "dimensions": "1.74 m × 1.74 m (3.0 m²)",
+      "polygon": [
+        { "x": 0.652, "y": 0.018 },
+        { "x": 0.935, "y": 0.018 },
+        { "x": 0.935, "y": 0.098 },
+        { "x": 0.652, "y": 0.098 }
+      ]
+    },
+    {
+      "id": "bal_side",
+      "name": "Balcony (living)",
+      "type": "balcony",
+      "dimensions": "1.74 m wide (3.8 m²)",
+      "polygon": [
+        { "x": 0.915, "y": 0.435 },
+        { "x": 0.992, "y": 0.435 },
+        { "x": 0.992, "y": 0.895 },
+        { "x": 0.915, "y": 0.895 }
+      ]
+    }
+  ],
+  "calibration": {
+    "unit": "m",
+    "note": "Endpoints in normalized bitmap coords (0–1). lengthM is the true length of that segment. Average meters/px is used for area and scale readout.",
+    "segments": [
+      {
+        "id": "passage-clear-width",
+        "lengthM": 3.96,
+        "from": { "x": 0.398, "y": 0.192 },
+        "to": { "x": 0.602, "y": 0.192 }
+      },
+      {
+        "id": "living-depth",
+        "lengthM": 4.06,
+        "from": { "x": 0.783, "y": 0.405 },
+        "to": { "x": 0.783, "y": 0.905 }
+      }
+    ]
+  },
+  "walls": [
+    {
+      "id": "shell",
+      "role": "exterior",
+      "points": [
+        { "x": 0.024, "y": 0.100 },
+        { "x": 0.976, "y": 0.100 },
+        { "x": 0.976, "y": 0.960 },
+        { "x": 0.024, "y": 0.960 },
+        { "x": 0.024, "y": 0.100 }
+      ],
+      "thickness": 0.014
+    },
+    { "id": "p-master-passage",  "role": "partition", "points": [{ "x": 0.400, "y": 0.100 }, { "x": 0.400, "y": 0.510 }], "thickness": 0.008 },
+    { "id": "p-bed2-passage",    "role": "partition", "points": [{ "x": 0.600, "y": 0.100 }, { "x": 0.600, "y": 0.510 }], "thickness": 0.008 },
+    { "id": "p-top-horizontal",  "role": "partition", "points": [{ "x": 0.400, "y": 0.365 }, { "x": 0.600, "y": 0.365 }], "thickness": 0.008 },
+    { "id": "p-bath-split",      "role": "partition", "points": [{ "x": 0.500, "y": 0.100 }, { "x": 0.500, "y": 0.195 }], "thickness": 0.007 },
+    { "id": "p-kitchen-left",    "role": "partition", "points": [{ "x": 0.130, "y": 0.460 }, { "x": 0.400, "y": 0.460 }], "thickness": 0.008 },
+    { "id": "p-dining-mid",      "role": "partition", "points": [{ "x": 0.400, "y": 0.510 }, { "x": 0.600, "y": 0.510 }], "thickness": 0.008 },
+    { "id": "p-living-right",    "role": "partition", "points": [{ "x": 0.600, "y": 0.510 }, { "x": 0.600, "y": 0.960 }], "thickness": 0.008 },
+    { "id": "p-kitchen-bottom",  "role": "partition", "points": [{ "x": 0.024, "y": 0.720 }, { "x": 0.400, "y": 0.720 }], "thickness": 0.008 }
+  ],
+  "doors": [
+    {
+      "id": "door-master-passage",
+      "type": "door",
+      "connects": ["M. Bed room", "Passage"],
+      "polygon": [
+        { "x": 0.392, "y": 0.22 },
+        { "x": 0.404, "y": 0.22 },
+        { "x": 0.404, "y": 0.305 },
+        { "x": 0.392, "y": 0.305 }
+      ]
+    },
+    {
+      "id": "door-bed2-passage",
+      "type": "door",
+      "connects": ["Bed room", "Passage"],
+      "polygon": [
+        { "x": 0.596, "y": 0.22 },
+        { "x": 0.608, "y": 0.22 },
+        { "x": 0.608, "y": 0.305 },
+        { "x": 0.596, "y": 0.305 }
+      ]
+    },
+    {
+      "id": "door-bath1-passage",
+      "type": "door",
+      "connects": ["Bathroom 1", "Passage"],
+      "polygon": [
+        { "x": 0.428, "y": 0.186 },
+        { "x": 0.472, "y": 0.186 },
+        { "x": 0.472, "y": 0.198 },
+        { "x": 0.428, "y": 0.198 }
+      ]
+    },
+    {
+      "id": "door-bath2-passage",
+      "type": "door",
+      "connects": ["Bathroom 2", "Passage"],
+      "polygon": [
+        { "x": 0.528, "y": 0.186 },
+        { "x": 0.572, "y": 0.186 },
+        { "x": 0.572, "y": 0.198 },
+        { "x": 0.528, "y": 0.198 }
+      ]
+    },
+    {
+      "id": "door-passage-kitchen",
+      "type": "door",
+      "connects": ["Passage", "Kitchen"],
+      "polygon": [
+        { "x": 0.392, "y": 0.478 },
+        { "x": 0.404, "y": 0.478 },
+        { "x": 0.404, "y": 0.548 },
+        { "x": 0.392, "y": 0.548 }
+      ]
+    },
+    {
+      "id": "door-passage-dining",
+      "type": "door",
+      "connects": ["Passage", "Dining"],
+      "polygon": [
+        { "x": 0.498, "y": 0.505 },
+        { "x": 0.562, "y": 0.505 },
+        { "x": 0.562, "y": 0.528 },
+        { "x": 0.498, "y": 0.528 }
+      ]
+    },
+    {
+      "id": "door-passage-living",
+      "type": "door",
+      "connects": ["Passage", "Living room"],
+      "polygon": [
+        { "x": 0.596, "y": 0.448 },
+        { "x": 0.608, "y": 0.448 },
+        { "x": 0.608, "y": 0.518 },
+        { "x": 0.596, "y": 0.518 }
+      ]
+    },
+    {
+      "id": "door-utility-kitchen",
+      "type": "door",
+      "connects": ["Utility", "Kitchen"],
+      "polygon": [
+        { "x": 0.116, "y": 0.548 },
+        { "x": 0.134, "y": 0.548 },
+        { "x": 0.134, "y": 0.598 },
+        { "x": 0.116, "y": 0.598 }
+      ]
+    },
+    {
+      "id": "door-master-balcony",
+      "type": "door",
+      "connects": ["M. Bed room", "Balcony (master)"],
+      "polygon": [
+        { "x": 0.18, "y": 0.098 },
+        { "x": 0.26, "y": 0.098 },
+        { "x": 0.26, "y": 0.108 },
+        { "x": 0.18, "y": 0.108 }
+      ]
+    },
+    {
+      "id": "door-bed2-balcony",
+      "type": "door",
+      "connects": ["Bed room", "Balcony (bedroom)"],
+      "polygon": [
+        { "x": 0.74, "y": 0.098 },
+        { "x": 0.82, "y": 0.098 },
+        { "x": 0.82, "y": 0.108 },
+        { "x": 0.74, "y": 0.108 }
+      ]
+    },
+    {
+      "id": "door-living-balcony",
+      "type": "door",
+      "connects": ["Living room", "Balcony (living)"],
+      "polygon": [
+        { "x": 0.908, "y": 0.62 },
+        { "x": 0.918, "y": 0.62 },
+        { "x": 0.918, "y": 0.72 },
+        { "x": 0.908, "y": 0.72 }
+      ]
+    }
+  ],
+  "furniture_catalog": [
+    {
+      "id": "cat-bed-suite",
+      "name": "Bed + nightstands + dresser",
+      "shape": "apartment_bedroom_suite"
+    },
+    {
+      "id": "cat-bath",
+      "name": "Bath (toilet + shower)",
+      "shape": "apartment_bath"
+    },
+    {
+      "id": "cat-k-counter",
+      "name": "Kitchen counter + stove",
+      "shape": "apartment_kitchen_counter"
+    },
+    {
+      "id": "cat-k-table",
+      "name": "Kitchen table (2 chairs)",
+      "shape": "apartment_kitchen_table2"
+    },
+    {
+      "id": "cat-dining",
+      "name": "Dining table (4 chairs)",
+      "shape": "apartment_dining_4"
+    },
+    {
+      "id": "cat-sofa",
+      "name": "Living sofa (3-seat)",
+      "shape": "apartment_living_sofa"
+    },
+    {
+      "id": "cat-media",
+      "name": "TV bench / coffee table",
+      "shape": "apartment_living_media"
+    }
+  ],
+  "furniture": [
+    {
+      "id": "fx-master-bed",
+      "catalogId": "cat-bed-suite",
+      "x": 0.21,
+      "y": 0.235,
+      "rotationDeg": 0,
+      "scale": 0.145,
+      "zIndex": 3
+    },
+    {
+      "id": "fx-bed2",
+      "catalogId": "cat-bed-suite",
+      "x": 0.79,
+      "y": 0.235,
+      "rotationDeg": 0,
+      "scale": 0.145,
+      "zIndex": 3
+    },
+    {
+      "id": "fx-bath1",
+      "catalogId": "cat-bath",
+      "x": 0.45,
+      "y": 0.132,
+      "rotationDeg": 0,
+      "scale": 0.1,
+      "zIndex": 2
+    },
+    {
+      "id": "fx-bath2",
+      "catalogId": "cat-bath",
+      "x": 0.55,
+      "y": 0.132,
+      "rotationDeg": 0,
+      "scale": 0.1,
+      "zIndex": 2
+    },
+    {
+      "id": "fx-k-counter",
+      "catalogId": "cat-k-counter",
+      "x": 0.26,
+      "y": 0.54,
+      "rotationDeg": 0,
+      "scale": 0.125,
+      "zIndex": 2
+    },
+    {
+      "id": "fx-k-table",
+      "catalogId": "cat-k-table",
+      "x": 0.23,
+      "y": 0.64,
+      "rotationDeg": 0,
+      "scale": 0.1,
+      "zIndex": 3
+    },
+    {
+      "id": "fx-dining",
+      "catalogId": "cat-dining",
+      "x": 0.513,
+      "y": 0.66,
+      "rotationDeg": 0,
+      "scale": 0.115,
+      "zIndex": 3
+    },
+    {
+      "id": "fx-sofa",
+      "catalogId": "cat-sofa",
+      "x": 0.745,
+      "y": 0.72,
+      "rotationDeg": 0,
+      "scale": 0.14,
+      "zIndex": 3
+    },
+    {
+      "id": "fx-media",
+      "catalogId": "cat-media",
+      "x": 0.755,
+      "y": 0.56,
+      "rotationDeg": 0,
+      "scale": 0.11,
+      "zIndex": 2
+    }
+  ]
+}

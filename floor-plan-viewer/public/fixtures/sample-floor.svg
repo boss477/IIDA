@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1150" viewBox="0 0 800 1150" role="img" aria-label="Apartment schematic fallback">
+  <rect width="800" height="1150" fill="#d0d0d0"/>
+  <g stroke="#3d2817" stroke-linejoin="miter">
+    <rect x="25" y="95" width="290" height="265" fill="#e8d4a0" stroke-width="10"/>
+    <rect x="485" y="95" width="290" height="265" fill="#e8d4a0" stroke-width="10"/>
+    <rect x="315" y="65" width="80" height="130" fill="#b8d9f0" stroke-width="8"/>
+    <rect x="405" y="65" width="80" height="130" fill="#b8d9f0" stroke-width="8"/>
+    <rect x="280" y="195" width="240" height="365" fill="#e8d4a0" stroke-width="10"/>
+    <rect x="105" y="525" width="235" height="255" fill="#e8d4a0" stroke-width="10"/>
+    <rect x="330" y="600" width="185" height="265" fill="#e8d4a0" stroke-width="10"/>
+    <rect x="455" y="455" width="305" height="545" fill="#e8d4a0" stroke-width="10"/>
+    <rect x="15" y="535" width="95" height="265" fill="#e8d4a0" stroke-width="8"/>
+    <rect x="55" y="25" width="230" height="85" fill="#c5e1a5" stroke-width="8"/>
+    <rect x="515" y="25" width="230" height="85" fill="#c5e1a5" stroke-width="8"/>
+    <rect x="730" y="480" width="55" height="505" fill="#c5e1a5" stroke-width="8"/>
+  </g>
+  <text x="400" y="1120" text-anchor="middle" fill="#555" font-family="system-ui,sans-serif" font-size="14">Fallback schematic — add reference-floor.png for your sheet</text>
+</svg>
