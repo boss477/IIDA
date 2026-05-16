@@ -10,6 +10,7 @@ import {
 } from "../services/vision.js";
 import { uploadPlanRaster } from "../services/supabase.js";
 import { bindPlanFileInput } from "../upload/uploadDropzone.js";
+import { validateAnalysis } from "../lib/analysisValidation.js";
 import { renderPlan } from "./svgRenderer.js";
 import { updateRoomHighlight } from "./roomOverlay.js";
 import { hideTooltip, showRoomTooltip } from "./tooltip.js";
@@ -54,6 +55,9 @@ export function initFloorPlanViewer() {
   var activeRoomId = null;
   var selectedFurnitureId = null;
   var lastOpenedFile = null;
+  var geometryOnly = false;
+  var vertexEditMode = false;
+  var vertexDrag = null;
 
   var llmStatus = document.createElement("span");
   llmStatus.className = "llm-status";
@@ -88,6 +92,24 @@ export function initFloorPlanViewer() {
   var scaleEl = document.createElement("span");
   scaleEl.className = "calibration-scale";
   scaleEl.textContent = "Scale: load plan + JSON calibration";
+
+  var wallWarnEl = document.createElement("span");
+  wallWarnEl.className = "wall-warning";
+  wallWarnEl.setAttribute("aria-live", "polite");
+
+  function updateWallWarning() {
+    if (!data.walls || !data.walls.length) {
+      wallWarnEl.textContent =
+        "Warning: walls[] is empty — wall layer not drawn. Re-analyze or add walls in JSON.";
+    } else {
+      wallWarnEl.textContent = "";
+    }
+  }
+
+  function applyGeometryOnlyClass() {
+    if (geometryOnly) planWrap.classList.add("geometry-only");
+    else planWrap.classList.remove("geometry-only");
+  }
 
   function refreshCalibration() {
     if (!plan.naturalWidth || !plan.naturalHeight) {
@@ -233,7 +255,10 @@ export function initFloorPlanViewer() {
 
   function render() {
     layoutOverlay();
-    renderPlan(overlay, data, activeRoomId, selectedFurnitureId, imageSize());
+    renderPlan(overlay, data, activeRoomId, selectedFurnitureId, imageSize(), {
+      vertexEditMode: vertexEditMode,
+    });
+    updateWallWarning();
   }
 
   function onPlanLoaded() {
@@ -265,7 +290,18 @@ export function initFloorPlanViewer() {
     };
   }
 
-  function applyAnalysisFromObject(nextData) {
+  function applyAnalysisFromObject(nextData, options) {
+    options = options || {};
+    if (options.validate && plan.naturalWidth && plan.naturalHeight) {
+      var validationErr = validateAnalysis(
+        nextData,
+        plan.naturalWidth,
+        plan.naturalHeight
+      );
+      if (validationErr) {
+        throw new Error(validationErr);
+      }
+    }
     data = Object.assign(
       {
         analysisVersion: "1.0",
@@ -304,7 +340,7 @@ export function initFloorPlanViewer() {
         return analyzeFloorPlan(img.imageBase64, img.mimeType);
       })
       .then(function (analysis) {
-        applyAnalysisFromObject(analysis);
+        applyAnalysisFromObject(analysis, { validate: true });
         setLlmStatus("LLM: analysis loaded");
       })
       .catch(function (err) {
@@ -402,6 +438,18 @@ export function initFloorPlanViewer() {
       }
       runVisionOnFile(f);
     },
+    toggleGeometryOnly: function () {
+      geometryOnly = !geometryOnly;
+      applyGeometryOnlyClass();
+    },
+    toggleVertexEdit: function () {
+      vertexEditMode = !vertexEditMode;
+      if (vertexEditMode) {
+        selectedFurnitureId = null;
+        syncReplaceSelect();
+      }
+      render();
+    },
   });
 
   var replaceLab = document.createElement("label");
@@ -413,6 +461,7 @@ export function initFloorPlanViewer() {
   toolbarEl.appendChild(replaceLab);
   toolbarEl.appendChild(llmStatus);
   toolbarEl.appendChild(scaleEl);
+  toolbarEl.appendChild(wallWarnEl);
   toolbarEl.appendChild(hint);
 
   replaceSel.addEventListener("change", function () {
@@ -442,6 +491,28 @@ export function initFloorPlanViewer() {
     "mousedown",
     function (e) {
       if (e.button !== 0) return;
+      var handle = e.target.closest(".plan-vertex-handle");
+      if (vertexEditMode && handle) {
+        e.stopPropagation();
+        stopCameraTween();
+        var roomId = handle.getAttribute("data-room-id");
+        var vi = parseInt(handle.getAttribute("data-vertex-index"), 10);
+        var room = data.rooms.find(function (r) {
+          return (r.id || r.name || "") === roomId;
+        });
+        if (!room || !room.polygon || isNaN(vi)) return;
+        var pt = room.polygon[vi];
+        var n = clientToPlanNormalized(e.clientX, e.clientY);
+        vertexDrag = {
+          roomId: roomId,
+          index: vi,
+          ox: pt.x,
+          oy: pt.y,
+          nx: n.x,
+          ny: n.y,
+        };
+        return;
+      }
       var g = e.target.closest("[data-furniture-id]");
       if (g) {
         e.stopPropagation();
@@ -485,7 +556,7 @@ export function initFloorPlanViewer() {
   });
 
   planWrap.addEventListener("mousemove", function (e) {
-    if (furnitureDrag) return;
+    if (furnitureDrag || vertexDrag) return;
     var n = clientToPlanNormalized(e.clientX, e.clientY);
     if (n.x < 0 || n.x > 1 || n.y < 0 || n.y > 1) {
       activeRoomId = null;
@@ -517,10 +588,24 @@ export function initFloorPlanViewer() {
   viewport.addEventListener("mousedown", function (e) {
     if (e.button !== 0) return;
     if (e.target.closest("[data-furniture-id]")) return;
+    if (e.target.closest(".plan-vertex-handle")) return;
     stopCameraTween();
     drag = { x: e.clientX - tx, y: e.clientY - ty };
   });
   window.addEventListener("mousemove", function (e) {
+    if (vertexDrag) {
+      var room = data.rooms.find(function (r) {
+        return (r.id || r.name || "") === vertexDrag.roomId;
+      });
+      if (room && room.polygon && room.polygon[vertexDrag.index]) {
+        var n = clientToPlanNormalized(e.clientX, e.clientY);
+        var pt = room.polygon[vertexDrag.index];
+        pt.x = Math.min(1, Math.max(0, vertexDrag.ox + (n.x - vertexDrag.nx)));
+        pt.y = Math.min(1, Math.max(0, vertexDrag.oy + (n.y - vertexDrag.ny)));
+        render();
+      }
+      return;
+    }
     if (furnitureDrag) {
       var item = data.furniture.find(function (f) {
         return f.id === furnitureDrag.id;
@@ -547,6 +632,10 @@ export function initFloorPlanViewer() {
     applyTransform();
   });
   window.addEventListener("mouseup", function () {
+    if (vertexDrag) {
+      vertexDrag = null;
+      return;
+    }
     if (furnitureDrag) {
       var item = data.furniture.find(function (f) {
         return f.id === furnitureDrag.id;
@@ -568,6 +657,8 @@ export function initFloorPlanViewer() {
     if (e.key === "Escape") {
       stopCameraTween();
       selectedFurnitureId = null;
+      vertexEditMode = false;
+      vertexDrag = null;
       syncReplaceSelect();
       render();
       e.preventDefault();

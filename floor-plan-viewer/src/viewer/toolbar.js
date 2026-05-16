@@ -9,6 +9,8 @@
  * @param {() => void} handlers.fullscreen
  * @param {() => void} [handlers.exportJson]
  * @param {() => void} [handlers.analyzeLlm]
+ * @param {() => void} [handlers.toggleGeometryOnly]
+ * @param {() => void} [handlers.toggleVertexEdit]
  * @returns {{ fileInput: HTMLInputElement }}
  */
 export function mountToolbar(container, handlers) {
@@ -44,6 +46,12 @@ export function mountToolbar(container, handlers) {
   }
   if (handlers.analyzeLlm) {
     addButton("Analyze LLM", handlers.analyzeLlm);
+  }
+  if (handlers.toggleGeometryOnly) {
+    addButton("Geometry only", handlers.toggleGeometryOnly);
+  }
+  if (handlers.toggleVertexEdit) {
+    addButton("Edit vertices", handlers.toggleVertexEdit);
   }
   addButton("Fullscreen", handlers.fullscreen);
 

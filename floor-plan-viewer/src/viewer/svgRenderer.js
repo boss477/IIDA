@@ -193,18 +193,6 @@ function polygonCentroid(points) {
   return { x: cx / (6 * area), y: cy / (6 * area) };
 }
 
-function wallSourceFromRooms(rooms) {
-  return (rooms || [])
-    .filter(function (r) { return r.polygon && r.polygon.length >= 3; })
-    .map(function (r) {
-      return {
-        id: "wall-from-" + (r.id || r.name || Math.random()),
-        points: r.polygon.concat([r.polygon[0]]),
-        thickness: 0.006,
-      };
-    });
-}
-
 function renderBackground(svg, size) {
   const rect = document.createElementNS(NS, "rect");
   rect.setAttribute("x", "0"); rect.setAttribute("y", "0");
@@ -258,31 +246,41 @@ function renderTexturedFills(svg, rooms, activeRoomId, size) {
 }
 
 function renderRugs(svg, rooms, size) {
-  (rooms || []).forEach(function (room) {
+  let defs = svg.querySelector("defs");
+  if (!defs) return;
+
+  (rooms || []).forEach(function (room, idx) {
     const name = String(room.type || room.name || "").toLowerCase();
     if (!name.includes("living") && !name.includes("bed")) return;
     if (!room.polygon || room.polygon.length < 3) return;
 
-    let minX = 1, minY = 1, maxX = 0, maxY = 0;
-    room.polygon.forEach(function (p) {
-      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-      maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
-    });
+    const pts = pointsAttr(room.polygon, size.width, size.height);
+    const clipId = "rug-clip-" + String(room.id || room.name || idx).replace(/\s+/g, "-");
+    const clip = document.createElementNS(NS, "clipPath");
+    clip.setAttribute("id", clipId);
+    const clipPoly = document.createElementNS(NS, "polygon");
+    clipPoly.setAttribute("points", pts);
+    clip.appendChild(clipPoly);
+    defs.appendChild(clip);
 
-    const pad = 0.05;
-    const rw = (maxX - minX - pad * 2) * size.width;
-    const rh = (maxY - minY - pad * 2) * size.height;
+    const bbox = polygonBBox(room.polygon);
+    const pad = 0.02;
+    const rx = (bbox.minX - pad) * size.width;
+    const ry = (bbox.minY - pad) * size.height;
+    const rw = (bbox.maxX - bbox.minX + pad * 2) * size.width;
+    const rh = (bbox.maxY - bbox.minY + pad * 2) * size.height;
     if (rw <= 0 || rh <= 0) return;
-    const rx = (minX + pad) * size.width;
-    const ry = (minY + pad) * size.height;
 
     const rug = document.createElementNS(NS, "rect");
-    rug.setAttribute("x", String(rx)); rug.setAttribute("y", String(ry));
-    rug.setAttribute("width", String(rw)); rug.setAttribute("height", String(rh));
+    rug.setAttribute("x", String(rx));
+    rug.setAttribute("y", String(ry));
+    rug.setAttribute("width", String(rw));
+    rug.setAttribute("height", String(rh));
     rug.setAttribute("fill", "url(#carpet)");
     rug.setAttribute("stroke", "#e0d8cc");
     rug.setAttribute("stroke-width", "0.8");
     rug.setAttribute("rx", "4");
+    rug.setAttribute("clip-path", "url(#" + clipId + ")");
     svg.appendChild(rug);
   });
 }
@@ -394,13 +392,11 @@ function wallSegmentToPolygon(ax, ay, bx, by, halfW) {
   ].join(" ");
 }
 
-function renderWalls(svg, walls, rooms, size) {
-  const hasRealWalls = walls && walls.length > 0;
-  const source = hasRealWalls ? walls : wallSourceFromRooms(rooms);
+function renderWalls(svg, walls, size) {
+  if (!walls || !walls.length) return;
   const unit = Math.min(size.width, size.height);
-  const isFallback = !hasRealWalls;
 
-  source.forEach(function (wall, idx) {
+  walls.forEach(function (wall, idx) {
     if (!wall.points || wall.points.length < 2) return;
     const role = wall.role || "partition";
     const minHalfPx = role === "exterior" ? 5 : 3;
@@ -418,7 +414,6 @@ function renderWalls(svg, walls, rooms, size) {
       seg.setAttribute("points", wallSegmentToPolygon(ax, ay, bx, by, halfW));
       seg.setAttribute("fill", "#111111");
       seg.setAttribute("stroke", "none");
-      if (isFallback) seg.setAttribute("fill-opacity", "0.35");
       svg.appendChild(seg);
     }
 
@@ -862,7 +857,41 @@ function renderLabels(svg, rooms, size) {
   });
 }
 
-export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size) {
+/**
+ * @param {SVGSVGElement} svg
+ * @param {Array<object>} rooms
+ * @param {{ width:number, height:number }} size
+ */
+export function renderVertexHandles(svg, rooms, size) {
+  (rooms || []).forEach(function (room) {
+    if (!room.polygon || room.polygon.length < 3) return;
+    const roomId = room.id || room.name || "";
+    room.polygon.forEach(function (p, i) {
+      const c = document.createElementNS(NS, "circle");
+      c.setAttribute("class", "plan-vertex-handle");
+      c.setAttribute("data-room-id", roomId);
+      c.setAttribute("data-vertex-index", String(i));
+      c.setAttribute("cx", String(p.x * size.width));
+      c.setAttribute("cy", String(p.y * size.height));
+      c.setAttribute("r", "6");
+      c.setAttribute("fill", "#ff5722");
+      c.setAttribute("stroke", "#ffffff");
+      c.setAttribute("stroke-width", "2");
+      svg.appendChild(c);
+    });
+  });
+}
+
+/**
+ * @param {SVGSVGElement} svg
+ * @param {object} data
+ * @param {string|null} activeRoomId
+ * @param {string|null} selectedFurnitureId
+ * @param {{ width:number, height:number }} size
+ * @param {{ vertexEditMode?: boolean }} [options]
+ */
+export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size, options) {
+  const opts = options || {};
   svg.innerHTML = "";
   renderBackground(svg, size);
   createDefs(svg);
@@ -870,7 +899,10 @@ export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size) {
   renderTexturedFills(svg, data.rooms || [], activeRoomId, size);
   renderRugs(svg, data.rooms || [], size);
   renderWindows(svg, data.windows || [], size);
-  renderWalls(svg, data.walls || [], data.rooms || [], size);
+  renderWalls(svg, data.walls || [], size);
   renderDetailedFurniture(svg, data.furniture || [], data.furniture_catalog || [], selectedFurnitureId, size);
   renderLabels(svg, data.rooms || [], size);
+  if (opts.vertexEditMode) {
+    renderVertexHandles(svg, data.rooms || [], size);
+  }
 }

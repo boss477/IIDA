@@ -68,6 +68,22 @@ button:hover {
   background: transparent;
   border-radius: 6px;
 }
+.plan-wrap.geometry-only #plan {
+  opacity: 0;
+  pointer-events: none;
+}
+#overlay .plan-vertex-handle {
+  pointer-events: auto;
+  cursor: move;
+}
+#overlay .plan-vertex-handle:hover {
+  fill: #ff9800;
+}
+.wall-warning {
+  color: #b45309;
+  font-size: 13px;
+  max-width: 420px;
+}
 #overlay .plan-bg {
   fill: #fff;
 }

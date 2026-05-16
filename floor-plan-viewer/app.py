@@ -375,6 +375,72 @@ def parse_response(text: str) -> dict:
     return normalize_analysis(parse_model_json(text))
 
 
+def _shell_aspect_ratio(walls: list) -> float | None:
+    best = None
+    for wall in walls or []:
+        pts = wall.get("points") if isinstance(wall, dict) else None
+        if not pts or len(pts) < 3:
+            continue
+        role = str(wall.get("role") or "").lower()
+        if role == "exterior":
+            best = wall
+            break
+        if best is None or len(pts) > len(best.get("points") or []):
+            best = wall
+    if not best:
+        return None
+    xs = [p["x"] for p in best["points"] if isinstance(p, dict) and "x" in p and "y" in p]
+    ys = [p["y"] for p in best["points"] if isinstance(p, dict) and "x" in p and "y" in p]
+    if not xs or not ys:
+        return None
+    bw = max(xs) - min(xs)
+    bh = max(ys) - min(ys)
+    if bh < 1e-6:
+        return None
+    return bw / bh
+
+
+def validate_analysis(data: dict, image_width: int, image_height: int) -> str | None:
+    errors: list[str] = []
+    rooms = data.get("rooms") or []
+    walls = data.get("walls") or []
+
+    if not walls:
+        errors.append(
+            "walls[] is empty — structural walls are required (wall layer will not be drawn)."
+        )
+
+    if len(rooms) > 3:
+        box_rooms = [r for r in rooms if isinstance(r, dict) and len(r.get("polygon") or []) == 4]
+        if box_rooms:
+            errors.append(
+                f"{len(box_rooms)} room(s) have only 4 polygon points (likely bounding boxes, not traced shapes). "
+                "Re-analyze or edit vertices."
+            )
+
+    if image_width > 0 and image_height > 0 and walls:
+        shell_ar = _shell_aspect_ratio(walls)
+        if shell_ar is not None:
+            img_ar = image_width / image_height
+            rel_diff = abs(shell_ar - img_ar) / max(img_ar, 1e-6)
+            if rel_diff > 0.4:
+                errors.append(
+                    f"Shell aspect ratio ({shell_ar:.2f}) differs from image ({img_ar:.2f}) by "
+                    f"{round(rel_diff * 100)}% — coordinates may be cropped or wrong."
+                )
+
+    return " ".join(errors) if errors else None
+
+
+def b64_image_size(b64: str) -> tuple[int, int]:
+    try:
+        img_data = base64.b64decode(b64)
+        img = Image.open(BytesIO(img_data))
+        return img.width, img.height
+    except Exception:
+        return 0, 0
+
+
 def gemini_generate_url() -> str:
     return f"{GEMINI_API_BASE}/models/{GEMINI_MODEL}:generateContent"
 
@@ -519,9 +585,13 @@ def analyze():
             return jsonify({"error": "imageBase64 required"}), 400
         
         b64 = resize_image_b64(b64, max_size=2048)
+        img_w, img_h = b64_image_size(b64)
         mime = payload.get("mimeType") or "image/png"
         txt = analyze_with_gemini(b64, mime)
         parsed = parse_response(txt)
+        validation_err = validate_analysis(parsed, img_w, img_h)
+        if validation_err:
+            raise ValueError(validation_err)
         return jsonify(parsed)
     except ValueError as e:
         return jsonify({"error": str(e)}), 502
