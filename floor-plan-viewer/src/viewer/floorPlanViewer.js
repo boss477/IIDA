@@ -350,17 +350,52 @@ export function initFloorPlanViewer() {
       });
   }
 
-  function exportJson() {
-    var json = JSON.stringify(currentAnalysisJson(), null, 2);
+  function slugForFilename(text) {
+    var slug = String(text || "floor-plan")
+      .toLowerCase()
+      .replace(/[^\w]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48);
+    return slug || "floor-plan";
+  }
+
+  function downloadJsonObject(obj, filename) {
+    var json = JSON.stringify(obj, null, 2);
     var blob = new Blob([json], { type: "application/json" });
     var url = URL.createObjectURL(blob);
     var a = document.createElement("a");
     a.href = url;
-    a.download = "floor-plan-analysis.json";
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+  }
+
+  function currentCorrectedFixtureJson() {
+    return {
+      analysisVersion: data.analysisVersion || "1.0",
+      label: data.label || "Corrected fixture",
+      calibration: data.calibration || null,
+      rooms: data.rooms || [],
+      walls: data.walls || [],
+      windows: data.windows || [],
+    };
+  }
+
+  function exportJson() {
+    downloadJsonObject(currentAnalysisJson(), "floor-plan-analysis.json");
+  }
+
+  function exportCorrectedJson() {
+    if (!(data.rooms && data.rooms.length) && !(data.walls && data.walls.length)) {
+      alert("No room or wall geometry to export. Analyze or load a plan first.");
+      return;
+    }
+    downloadJsonObject(
+      currentCorrectedFixtureJson(),
+      slugForFilename(data.label) + "-corrected.json"
+    );
   }
 
   function loadFixture() {
@@ -430,6 +465,7 @@ export function initFloorPlanViewer() {
       else document.exitFullscreen();
     },
     exportJson: exportJson,
+    exportCorrectedJson: exportCorrectedJson,
     analyzeLlm: function () {
       var f = tb.fileInput.files && tb.fileInput.files[0];
       if (!f) {

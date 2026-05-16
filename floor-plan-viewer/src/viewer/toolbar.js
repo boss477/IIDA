@@ -8,6 +8,7 @@
  * @param {() => void} handlers.reset
  * @param {() => void} handlers.fullscreen
  * @param {() => void} [handlers.exportJson]
+ * @param {() => void} [handlers.exportCorrectedJson]
  * @param {() => void} [handlers.analyzeLlm]
  * @param {() => void} [handlers.toggleGeometryOnly]
  * @param {() => void} [handlers.toggleVertexEdit]
@@ -43,6 +44,9 @@ export function mountToolbar(container, handlers) {
   addButton("Reset", handlers.reset);
   if (handlers.exportJson) {
     addButton("Export JSON", handlers.exportJson);
+  }
+  if (handlers.exportCorrectedJson) {
+    addButton("Export corrected JSON", handlers.exportCorrectedJson);
   }
   if (handlers.analyzeLlm) {
     addButton("Analyze LLM", handlers.analyzeLlm);
