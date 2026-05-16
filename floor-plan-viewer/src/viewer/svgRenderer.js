@@ -210,7 +210,7 @@ function renderBackground(svg, size) {
   rect.setAttribute("x", "0"); rect.setAttribute("y", "0");
   rect.setAttribute("width", String(size.width));
   rect.setAttribute("height", String(size.height));
-  rect.setAttribute("fill", "#ffffff");
+  rect.setAttribute("fill", "transparent");
   svg.appendChild(rect);
 }
 

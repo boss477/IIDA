@@ -171,10 +171,14 @@ export function initFloorPlanViewer() {
     overlay.style.position = "absolute";
     overlay.style.left = "0";
     overlay.style.top = "0";
-    overlay.style.width = "100%";
-    overlay.style.height = "100%";
+    overlay.style.width = PLAN_SIZE.width + "px";
+    overlay.style.height = PLAN_SIZE.height + "px";
     overlay.style.right = "auto";
     overlay.style.bottom = "auto";
+    planWrap.style.width = PLAN_SIZE.width + "px";
+    planWrap.style.height = PLAN_SIZE.height + "px";
+    plan.style.width = PLAN_SIZE.width + "px";
+    plan.style.height = PLAN_SIZE.height + "px";
   }
 
   function imageSize() {
@@ -233,6 +237,9 @@ export function initFloorPlanViewer() {
   }
 
   function onPlanLoaded() {
+    if (plan.naturalWidth && plan.naturalHeight) {
+      PLAN_SIZE = { width: plan.naturalWidth, height: plan.naturalHeight };
+    }
     activeRoomId = null;
     render();
     refreshCalibration();

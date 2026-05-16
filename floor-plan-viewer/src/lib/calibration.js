@@ -10,6 +10,7 @@
 export function segmentLengthMeters(seg) {
   if (!seg) return null;
   if (seg.lengthM != null) return seg.lengthM;
+  if (seg.lengthMeters != null) return seg.lengthMeters;
   if (seg.lengthMm != null) return seg.lengthMm / 1000;
   return null;
 }
@@ -42,8 +43,10 @@ export function resolveCalibration(calibration, naturalWidth, naturalHeight) {
   for (var i = 0; i < calibration.segments.length; i++) {
     var s = calibration.segments[i];
     var lenM = segmentLengthMeters(s);
-    if (lenM == null || !s.from || !s.to) continue;
-    var Lpx = segmentLengthPx(s.from, s.to, naturalWidth, naturalHeight);
+    var from = s.from || s.a;
+    var to = s.to || s.b;
+    if (lenM == null || !from || !to) continue;
+    var Lpx = segmentLengthPx(from, to, naturalWidth, naturalHeight);
     if (Lpx < 1e-6) continue;
     mppSum += lenM / Lpx;
     used++;

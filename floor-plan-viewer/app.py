@@ -22,9 +22,11 @@ app = Flask(__name__, static_folder=None)
 
 ANALYZE_USER_TEXT = (
     "Extract structural walls (outer shell + interior partitions as centerlines with thickness, "
-    "NOT room edges), room floor polygons (area inside walls), windows on exterior walls, room labels "
-    "with dimensionsText when printed on the plan, optional calibration, and furniture. "
-    "Output one compact valid JSON object only (no trailing commas, no markdown)."
+    "NOT room edges), room floor polygons for every visible bounded space including closets/laundry/mech, "
+    "windows on exterior walls, room labels with dimensionsText when printed on the plan, calibration "
+    "segments for horizontal width and vertical height when dimensions are printed, and furniture. "
+    "Preserve exact aspect ratio and stepped/angled geometry. Output one compact valid JSON object only "
+    "(no trailing commas, no markdown)."
 )
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -71,36 +73,40 @@ SYSTEM_PROMPT = """You analyze architectural floor plan images for a premium arc
 
 Return exactly one valid JSON object. Extract enough normalized geometry to redraw the plan as vector SVG.
 
-COORDINATE SYSTEM: all values are normalized 0.0–1.0. x = across image width, y = down image height, origin = top-left of the bitmap.
+COORDINATE SYSTEM: all values are normalized 0.0-1.0. x = across image width, y = down image height, origin = top-left of the bitmap.
+Normalize against the FULL bitmap canvas, including whitespace and title text. Do not crop to the plan before producing coordinates.
+Preserve the original image aspect ratio. Do not normalize the plan into a square or redraw rooms as equal-size boxes.
+If the visible apartment footprint is wider than it is tall in the source image, the extracted outer shell bounding box must also be wider than tall.
+Trace the visible plan pixel-for-pixel: use the actual wall corners, offsets, angled corridor edges, jogs, and recesses. Do not simplify an irregular outline into rectangles.
 
-WALLS — most important field:
+WALLS - most important field:
 - walls is a required array. Do NOT leave it empty if black wall lines are visible.
 - Walls are the thick black or dark lines you see in the image. Rooms are the filled zones between those lines.
 - Do NOT put room perimeter edges into walls. A wall is a structural element, not a room boundary.
 - Each wall entry: { id, role, points:[{x,y},...], thickness }
   - role: "exterior" for outer building shell, "partition" for interior dividers.
   - points: centerline of the wall. 2 points = short partition segment. 3+ points = wall run or closed exterior shell.
-  - thickness (normalized): exterior walls 0.012–0.018, interior partitions 0.006–0.010.
-- Include one closed exterior shell (6+ points tracing the building outline) plus individual partition segments between rooms.
+  - thickness (normalized): exterior walls 0.012-0.018, interior partitions 0.006-0.010.
+- Include one closed exterior shell with all visible jogs/recesses plus individual partition segments between rooms.
 
 ROOMS:
 - rooms[].polygon traces the floor area INSIDE the walls (not the wall centerlines).
+- Include every labeled or visibly bounded space: bedrooms, living, kitchen, balcony, baths, walk-in closets, closet, laundry, mech, hall/corridor, and any small storage rooms.
+- If a room has an angled or stepped boundary, include those vertices in order instead of approximating with a bounding box.
 - rooms[].flooring: "wood" for bedrooms/living/dining/halls, "tile" for bathrooms/wet areas, "plain" for kitchens/utility, "stone" for balconies/patios.
 - rooms[].labelPoint: {x,y} near visual center of room.
 
 OTHER FIELDS:
 - windows: include every window gap on exterior walls as { id, position:{x,y}, width, height? }.
-- rooms[].dimensionsText: copy printed dimensions when visible (e.g. "12' 0\" x 9' 11\"").
-- calibration (optional): { segments:[{ id, a:{x,y}, b:{x,y}, lengthMeters }] } using labeled dimension lines when present.
+- rooms[].dimensionsText: copy printed dimensions when visible (e.g. "12' 0\\" x 9' 11\\"").
+- calibration: include at least two segments when dimensions are printed: one horizontal segment using the longest clear room width, and one vertical segment using the tallest clear room height. Format each as { id, from:{x,y}, to:{x,y}, lengthM }.
 - furniture: { id, type, x, y, width, height, rotationDeg? }. x/y are centers, normalized.
 - furniture_catalog: optional.
-- Omit doors[] entirely (not rendered).
+- Omit doors[] entirely unless a door swing is needed for a visible room boundary.
 
-JSON RULES: strictly valid JSON; no trailing commas; close all brackets; keep response under token limit by omitting doors and duplicative fields.
+JSON RULES: strictly valid JSON; no trailing commas; close all brackets; keep response under token limit by omitting duplicative fields.
 
-Reply with ONLY valid JSON, no markdown, no code fences.
-Example (shows exterior shell + two partition segments):
-{"analysisVersion":"1.0","rooms":[{"id":"kitchen","name":"Kitchen","type":"kitchen","flooring":"plain","dimensionsText":"9' 4\\" x 7' 3\\"","labelPoint":{"x":0.25,"y":0.55},"polygon":[{"x":0.13,"y":0.48},{"x":0.38,"y":0.48},{"x":0.38,"y":0.72},{"x":0.13,"y":0.72}]},{"id":"living","name":"Living","type":"living","flooring":"wood","labelPoint":{"x":0.65,"y":0.45},"polygon":[{"x":0.40,"y":0.20},{"x":0.88,"y":0.20},{"x":0.88,"y":0.72},{"x":0.40,"y":0.72}]}],"walls":[{"id":"shell","role":"exterior","points":[{"x":0.12,"y":0.18},{"x":0.89,"y":0.18},{"x":0.89,"y":0.74},{"x":0.12,"y":0.74},{"x":0.12,"y":0.18}],"thickness":0.014},{"id":"p1","role":"partition","points":[{"x":0.39,"y":0.18},{"x":0.39,"y":0.74}],"thickness":0.008},{"id":"p2","role":"partition","points":[{"x":0.12,"y":0.47},{"x":0.39,"y":0.47}],"thickness":0.008}],"windows":[{"id":"w1","position":{"x":0.88,"y":0.45},"width":0.08,"height":0.012}],"furniture":[],"furniture_catalog":[]}"""
+Reply with ONLY valid JSON, no markdown, no code fences."""
 
 
 def strip_fence(s: str) -> str:
@@ -127,10 +133,50 @@ def repair_json_text(text: str) -> str:
     return t
 
 
+def escape_unescaped_inner_quotes(text: str) -> str:
+    out = []
+    in_string = False
+    escaped = False
+    n = len(text)
+
+    for i, ch in enumerate(text):
+        if escaped:
+            out.append(ch)
+            escaped = False
+            continue
+
+        if ch == "\\":
+            out.append(ch)
+            escaped = in_string
+            continue
+
+        if ch == '"':
+            if not in_string:
+                in_string = True
+                out.append(ch)
+                continue
+
+            j = i + 1
+            while j < n and text[j].isspace():
+                j += 1
+            next_ch = text[j] if j < n else ""
+            if next_ch in (":", ",", "}", "]", ""):
+                in_string = False
+                out.append(ch)
+            else:
+                out.append('\\"')
+            continue
+
+        out.append(ch)
+
+    return "".join(out)
+
+
 def parse_model_json(text: str) -> dict:
     cleaned = strip_fence(text)
+    repaired = repair_json_text(cleaned)
     last_err = None
-    for candidate in (cleaned, repair_json_text(cleaned)):
+    for candidate in (cleaned, repaired, escape_unescaped_inner_quotes(repaired)):
         try:
             return json.loads(candidate)
         except json.JSONDecodeError as err:
@@ -493,7 +539,7 @@ import base64
 from io import BytesIO
 from PIL import Image
 
-def resize_image_b64(b64: str, max_size: int = 1024) -> str:
+def resize_image_b64(b64: str, max_size: int = 2048) -> str:
     try:
         img_data = base64.b64decode(b64)
         img = Image.open(BytesIO(img_data))
@@ -514,7 +560,7 @@ def analyze():
         if not b64:
             return jsonify({"error": "imageBase64 required"}), 400
         
-        b64 = resize_image_b64(b64, max_size=1024)
+        b64 = resize_image_b64(b64, max_size=2048)
         mime = payload.get("mimeType") or "image/png"
         txt = analyze_with_gemini(b64, mime)
         parsed = parse_response(txt)
