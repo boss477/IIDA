@@ -555,21 +555,6 @@ export function initFloorPlanViewer() {
       if (item && el) {
         el.setAttribute("transform", furnitureTransform(item));
         animateFurnitureDragEnd(el);
-        // #region agent log
-        fetch("http://127.0.0.1:7805/ingest/366268e5-c3c0-405e-8724-98cf4eb84d21", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "1a95b9" },
-          body: JSON.stringify({
-            sessionId: "1a95b9",
-            runId: "furniture-drag",
-            hypothesisId: "F",
-            location: "floorPlanViewer.js:mouseup",
-            message: "furniture drag end",
-            data: { id: item.id, x: item.x, y: item.y },
-            timestamp: Date.now(),
-          }),
-        }).catch(function () {});
-        // #endregion
         render();
       }
     }

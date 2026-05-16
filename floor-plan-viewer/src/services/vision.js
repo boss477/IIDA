@@ -72,21 +72,6 @@ function analyzeApiUrl() {
  * @param {string} baseUrl proxy base e.g. http://127.0.0.1:5173
  */
 function analyzeViaProxy(imageBase64, mimeType, baseUrl) {
-  // #region agent log
-  fetch("http://127.0.0.1:7805/ingest/366268e5-c3c0-405e-8724-98cf4eb84d21", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "1a95b9" },
-    body: JSON.stringify({
-      sessionId: "1a95b9",
-      runId: "gemini-analyze",
-      hypothesisId: "C",
-      location: "vision.js:analyzeViaProxy",
-      message: "analyze start",
-      data: { baseUrl: baseUrl },
-      timestamp: Date.now(),
-    }),
-  }).catch(function () {});
-  // #endregion
   return fetch(baseUrl + "/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -98,21 +83,6 @@ function analyzeViaProxy(imageBase64, mimeType, baseUrl) {
     return r.json().then(function (body) {
       if (!r.ok) throw new Error((body && body.error) || "Analyze failed: " + r.status);
       if (body && body.error) throw new Error(String(body.error));
-      // #region agent log
-      fetch("http://127.0.0.1:7805/ingest/366268e5-c3c0-405e-8724-98cf4eb84d21", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "1a95b9" },
-        body: JSON.stringify({
-          sessionId: "1a95b9",
-          runId: "gemini-analyze",
-          hypothesisId: "C",
-          location: "vision.js:analyzeViaProxy",
-          message: "analyze success",
-          data: { roomCount: body.rooms ? body.rooms.length : 0 },
-          timestamp: Date.now(),
-        }),
-      }).catch(function () {});
-      // #endregion
       return body;
     });
   });

@@ -215,8 +215,6 @@ function renderBackground(svg, size) {
 }
 
 function renderTexturedFills(svg, rooms, activeRoomId, size) {
-  let renderedRoomFills = 0;
-  let renderedRoomHighlights = 0;
   (rooms || []).forEach(function (room) {
     if (!room.polygon || room.polygon.length < 3) return;
     const pts = pointsAttr(room.polygon, size.width, size.height);
@@ -232,7 +230,6 @@ function renderTexturedFills(svg, rooms, activeRoomId, size) {
     base.setAttribute("stroke", "none");
     if (isActive) { base.setAttribute("fill", "#fffde7"); base.setAttribute("fill-opacity", "0.85"); }
     svg.appendChild(base);
-    renderedRoomFills += 1;
 
     const poly = document.createElementNS(NS, "polygon");
     poly.setAttribute("points", pts);
@@ -247,7 +244,6 @@ function renderTexturedFills(svg, rooms, activeRoomId, size) {
     hover.setAttribute("points", pts);
     hover.setAttribute("opacity", isActive ? "1" : "0");
     svg.appendChild(hover);
-    renderedRoomHighlights += 1;
 
     if (isActive) {
       const hl = document.createElementNS(NS, "polygon");
@@ -259,26 +255,6 @@ function renderTexturedFills(svg, rooms, activeRoomId, size) {
       svg.appendChild(hl);
     }
   });
-  // #region agent log
-  fetch("http://127.0.0.1:7805/ingest/366268e5-c3c0-405e-8724-98cf4eb84d21", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "1a95b9" },
-    body: JSON.stringify({
-      sessionId: "1a95b9",
-      runId: "room-hover-contract",
-      hypothesisId: "A",
-      location: "src/viewer/svgRenderer.js:renderTexturedFills",
-      message: "room hover hooks rendered",
-      data: {
-        roomCount: rooms ? rooms.length : 0,
-        renderedRoomFills,
-        renderedRoomHighlights,
-        activeRoomId: activeRoomId || null,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(function () {});
-  // #endregion
 }
 
 function renderRugs(svg, rooms, size) {
@@ -452,25 +428,6 @@ function renderWalls(svg, walls, rooms, size) {
       if (Math.abs(first.x - last.x) < 0.0001 && Math.abs(first.y - last.y) < 0.0001) return;
     }
   });
-  // #region agent log
-  fetch("http://127.0.0.1:7805/ingest/366268e5-c3c0-405e-8724-98cf4eb84d21", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "1a95b9" },
-    body: JSON.stringify({
-      sessionId: "1a95b9",
-      runId: "wall-fills",
-      hypothesisId: "A",
-      location: "src/viewer/svgRenderer.js:renderWalls",
-      message: "wall render metrics",
-      data: {
-        explicitWallCount: walls ? walls.length : 0,
-        isFallback: isFallback,
-        renderedSourceCount: source.length,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(function () {});
-  // #endregion
 }
 
 function renderDetailedFurniture(svg, furniture, catalog, selectedId, size) {

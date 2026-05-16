@@ -8,7 +8,6 @@ Flask app: serves floor plan viewer + /api/analyze via Google Gemini vision.
 import json
 import os
 import re
-import time
 from pathlib import Path
 
 import requests
@@ -16,7 +15,6 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 
 ROOT_DIR = Path(__file__).resolve().parent
 DIST_DIR = ROOT_DIR / "dist"
-DEBUG_LOG = ROOT_DIR.parent / "debug-1a95b9.log"
 
 app = Flask(__name__, static_folder=None)
 
@@ -47,22 +45,6 @@ def _load_env_file() -> None:
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
-
-
-def _debug_log(location: str, message: str, data: dict, hypothesis_id: str = "gemini") -> None:
-    try:
-        entry = {
-            "sessionId": "1a95b9",
-            "runId": "gemini-analyze",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        DEBUG_LOG.open("a", encoding="utf-8").write(json.dumps(entry) + "\n")
-    except Exception:
-        pass
 
 
 _load_env_file()
@@ -187,14 +169,6 @@ def parse_model_json(text: str) -> dict:
             return json.loads(repair_json_text(match.group(0)))
         except json.JSONDecodeError as err:
             last_err = err
-    # #region agent log
-    _debug_log(
-        "app.py:parse_model_json",
-        "JSON parse failed",
-        {"error": str(last_err), "textLen": len(cleaned)},
-        "J",
-    )
-    # #endregion
     if last_err is None:
         raise ValueError("No JSON object in model response")
     raise last_err
@@ -440,14 +414,6 @@ def analyze_with_gemini(image_b64: str, mime: str) -> str:
             "responseMimeType": "application/json",
         },
     }
-    # #region agent log
-    _debug_log(
-        "app.py:analyze_with_gemini",
-        "Gemini request config",
-        {"model": GEMINI_MODEL, "maxOutputTokens": 65536, "mime": mime or "image/png"},
-        "A",
-    )
-    # #endregion
     r = requests.post(
         url,
         json=body,
@@ -459,14 +425,6 @@ def analyze_with_gemini(image_b64: str, mime: str) -> str:
         msg = err.get("message") if isinstance(err, dict) else r.text
         raise ValueError(f"Gemini {r.status_code}: {msg}")
     text = gemini_text_from_response(data)
-    # #region agent log
-    _debug_log(
-        "app.py:analyze_with_gemini",
-        "Gemini response",
-        {"textLen": len(text), "status": r.status_code},
-        "B",
-    )
-    # #endregion
     return text
 
 
