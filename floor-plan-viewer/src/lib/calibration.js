@@ -114,3 +114,13 @@ export function normDeltaToMeters(dxNorm, dyNorm, naturalWidth, naturalHeight, m
   var dpx = Math.hypot(dxNorm * naturalWidth, dyNorm * naturalHeight);
   return dpx * metersPerPixel;
 }
+
+/**
+ * @param {number} meters
+ * @returns {string}
+ */
+export function formatDistanceMeters(meters) {
+  if (meters == null || !isFinite(meters)) return "";
+  if (meters >= 1) return meters.toFixed(2) + " m";
+  return (meters * 1000).toFixed(0) + " mm";
+}

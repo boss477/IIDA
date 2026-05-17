@@ -1,5 +1,5 @@
 /**
- * Floor plan vision: Flask /api/analyze proxy (Gemini on server).
+ * Floor plan vision: Flask /api/analyze proxy (Fireworks Kimi on server).
  */
 import { repairJsonText } from "../lib/jsonRepair.js";
 import { VISION_SYSTEM_PROMPT, VISION_USER_TEXT } from "../lib/visionPrompt.js";
@@ -109,5 +109,5 @@ export function isVisionConfigured() {
   return !!analyzeApiUrl();
 }
 
-// Kept for any direct imports; server uses Gemini via proxy only.
+// Kept for any direct imports; server uses Fireworks via proxy only.
 export { VISION_SYSTEM_PROMPT, VISION_USER_TEXT };

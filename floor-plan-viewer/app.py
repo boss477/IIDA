@@ -1,7 +1,7 @@
 """
-Flask app: serves floor plan viewer + /api/analyze via Google Gemini vision.
+Flask app: serves floor plan viewer + /api/analyze via Fireworks Kimi vision.
   pip install -r requirements.txt
-  Set GEMINI_API_KEY in .env (see .env.example)
+  Set FIREWORKS_API_KEY and/or FIREWORKS_API_KEY_FALLBACK in .env (see .env.example)
   npm run build && python app.py
   open http://127.0.0.1:5173
 """
@@ -9,6 +9,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Optional
 
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -27,9 +28,9 @@ ANALYZE_USER_TEXT = (
     "(no trailing commas, no markdown)."
 )
 
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-GEMINI_CONNECT_TIMEOUT = 30
-GEMINI_READ_TIMEOUT = 600
+FIREWORKS_API_BASE = "https://api.fireworks.ai/inference/v1"
+FIREWORKS_CHAT_URL = f"{FIREWORKS_API_BASE}/chat/completions"
+VISION_CONNECT_TIMEOUT = 30
 
 
 def _load_env_file() -> None:
@@ -48,8 +49,13 @@ def _load_env_file() -> None:
 
 
 _load_env_file()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview").strip()
+VISION_READ_TIMEOUT = int(os.environ.get("FIREWORKS_READ_TIMEOUT", "3600"))
+FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY", "").strip()
+FIREWORKS_API_KEY_FALLBACK = os.environ.get("FIREWORKS_API_KEY_FALLBACK", "").strip()
+FIREWORKS_MODEL = os.environ.get(
+    "FIREWORKS_MODEL", "accounts/fireworks/models/kimi-k2p6"
+).strip()
+VISION_PROVIDER = "fireworks"
 
 SYSTEM_PROMPT = """You analyze architectural floor plan images for a premium architectural SVG renderer.
 
@@ -441,57 +447,85 @@ def b64_image_size(b64: str) -> tuple[int, int]:
         return 0, 0
 
 
-def gemini_generate_url() -> str:
-    return f"{GEMINI_API_BASE}/models/{GEMINI_MODEL}:generateContent"
+def fireworks_api_keys() -> list[str]:
+    keys: list[str] = []
+    if FIREWORKS_API_KEY:
+        keys.append(FIREWORKS_API_KEY)
+    if FIREWORKS_API_KEY_FALLBACK and FIREWORKS_API_KEY_FALLBACK not in keys:
+        keys.append(FIREWORKS_API_KEY_FALLBACK)
+    return keys
 
 
-def gemini_text_from_response(data: dict) -> str:
+def fireworks_text_from_response(data: dict) -> str:
     if isinstance(data.get("error"), dict):
         err = data["error"]
         raise ValueError(err.get("message") or str(err))
-    candidates = data.get("candidates") or []
-    if not candidates:
-        raise ValueError("Gemini returned no candidates")
-    parts = (candidates[0].get("content") or {}).get("parts") or []
-    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text"))
-    if not text.strip():
-        raise ValueError("Gemini returned empty text")
-    return text
+    choices = data.get("choices") or []
+    if not choices:
+        raise ValueError("Fireworks returned no choices")
+    message = choices[0].get("message") or {}
+    text = message.get("content") or ""
+    if not str(text).strip():
+        raise ValueError("Fireworks returned empty text")
+    return str(text)
 
 
-def analyze_with_gemini(image_b64: str, mime: str) -> str:
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY is not set. Add it to floor-plan-viewer/.env")
-    url = gemini_generate_url() + "?key=" + GEMINI_API_KEY
+def _fireworks_should_try_next_key(status: int) -> bool:
+    return status in (401, 403, 429) or status >= 500
+
+
+def analyze_with_fireworks(image_b64: str, mime: str) -> str:
+    keys = fireworks_api_keys()
+    if not keys:
+        raise ValueError(
+            "FIREWORKS_API_KEY or FIREWORKS_API_KEY_FALLBACK is not set. Add to floor-plan-viewer/.env"
+        )
     body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": [
+        "model": FIREWORKS_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "parts": [
-                    {"text": ANALYZE_USER_TEXT},
-                    {"inline_data": {"mime_type": mime or "image/png", "data": image_b64}},
+                "content": [
+                    {"type": "text", "text": ANALYZE_USER_TEXT},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime or 'image/png'};base64,{image_b64}"
+                        },
+                    },
                 ],
-            }
+            },
         ],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 65536,
-            "responseMimeType": "application/json",
-        },
+        "temperature": 0.2,
+        "max_tokens": 65536,
     }
-    r = requests.post(
-        url,
-        json=body,
-        timeout=(GEMINI_CONNECT_TIMEOUT, GEMINI_READ_TIMEOUT),
-    )
-    data = r.json()
-    if not r.ok:
+    last_err: Optional[Exception] = None
+    for idx, api_key in enumerate(keys):
+        r = requests.post(
+            FIREWORKS_CHAT_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=(VISION_CONNECT_TIMEOUT, VISION_READ_TIMEOUT),
+        )
+        try:
+            data = r.json()
+        except ValueError:
+            data = {}
+        if r.ok:
+            return fireworks_text_from_response(data)
         err = data.get("error", {}) if isinstance(data, dict) else {}
         msg = err.get("message") if isinstance(err, dict) else r.text
-        raise ValueError(f"Gemini {r.status_code}: {msg}")
-    text = gemini_text_from_response(data)
-    return text
+        last_err = ValueError(f"Fireworks {r.status_code}: {msg}")
+        if idx < len(keys) - 1 and _fireworks_should_try_next_key(r.status_code):
+            continue
+        raise last_err
+    if last_err:
+        raise last_err
+    raise ValueError("Fireworks analyze failed")
 
 
 def serve_index():
@@ -506,8 +540,8 @@ def serve_index():
     config_script = f"""
   <script>
     window.__ANALYZE_API__ = window.location.origin;
-    window.__SERVER_VISION_MODEL__ = {json.dumps(GEMINI_MODEL)};
-    window.__SERVER_VISION_PROVIDER__ = "gemini";
+    window.__SERVER_VISION_MODEL__ = {json.dumps(FIREWORKS_MODEL)};
+    window.__SERVER_VISION_PROVIDER__ = {json.dumps(VISION_PROVIDER)};
   </script>"""
     html = html.replace("</head>", f"{config_script}\n</head>")
     return Response(html, mimetype="text/html")
@@ -528,33 +562,46 @@ def analyze_opts():
 
 @app.route("/api/health", methods=["GET"])
 def health():
-    if not GEMINI_API_KEY:
+    keys = fireworks_api_keys()
+    if not keys:
         return jsonify(
             {
                 "ok": False,
-                "provider": "gemini",
-                "model": GEMINI_MODEL,
-                "error": "GEMINI_API_KEY not set in .env",
+                "provider": VISION_PROVIDER,
+                "model": FIREWORKS_MODEL,
+                "error": "FIREWORKS_API_KEY / FIREWORKS_API_KEY_FALLBACK not set in .env",
             }
         ), 502
     try:
-        url = f"{GEMINI_API_BASE}/models/{GEMINI_MODEL}?key={GEMINI_API_KEY}"
-        r = requests.get(url, timeout=10)
+        r = requests.post(
+            FIREWORKS_CHAT_URL,
+            headers={
+                "Authorization": f"Bearer {keys[0]}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": FIREWORKS_MODEL,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+            },
+            timeout=15,
+        )
         return jsonify(
             {
                 "ok": r.ok,
-                "provider": "gemini",
-                "model": GEMINI_MODEL,
+                "provider": VISION_PROVIDER,
+                "model": FIREWORKS_MODEL,
                 "status": r.status_code,
+                "fallbackConfigured": bool(FIREWORKS_API_KEY_FALLBACK),
             }
         ), (200 if r.ok else 502)
     except requests.RequestException as e:
         return jsonify(
             {
                 "ok": False,
-                "provider": "gemini",
-                "model": GEMINI_MODEL,
-                "error": f"Gemini API not reachable: {e}",
+                "provider": VISION_PROVIDER,
+                "model": FIREWORKS_MODEL,
+                "error": f"Fireworks API not reachable: {e}",
             }
         ), 502
 
@@ -587,7 +634,7 @@ def analyze():
         b64 = resize_image_b64(b64, max_size=2048)
         img_w, img_h = b64_image_size(b64)
         mime = payload.get("mimeType") or "image/png"
-        txt = analyze_with_gemini(b64, mime)
+        txt = analyze_with_fireworks(b64, mime)
         parsed = parse_response(txt)
         validation_err = validate_analysis(parsed, img_w, img_h)
         if validation_err:
@@ -596,7 +643,7 @@ def analyze():
     except ValueError as e:
         return jsonify({"error": str(e)}), 502
     except requests.RequestException as e:
-        return jsonify({"error": f"Gemini API error: {e}"}), 502
+        return jsonify({"error": f"Fireworks API error: {e}"}), 502
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -624,9 +671,12 @@ def spa_fallback(_path):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5173"))
     print(f"Floor plan viewer http://127.0.0.1:{port}")
-    print(f"Analyze API http://127.0.0.1:{port}/api/analyze -> Gemini {GEMINI_MODEL}")
-    if GEMINI_API_KEY:
-        print("Gemini API key: loaded from .env / environment")
+    print(f"Analyze API http://127.0.0.1:{port}/api/analyze -> Fireworks {FIREWORKS_MODEL}")
+    if fireworks_api_keys():
+        print(
+            "Fireworks API key(s): "
+            + ("primary + fallback" if len(fireworks_api_keys()) > 1 else "loaded")
+        )
     else:
-        print("Gemini API key: MISSING — set GEMINI_API_KEY in .env")
+        print("Fireworks API key: MISSING — set FIREWORKS_API_KEY in .env")
     app.run(host="127.0.0.1", port=port, debug=False)

@@ -142,10 +142,15 @@ function createDefs(svg) {
 function patternForRoom(room) {
   const name = String(room.type || room.name || "").toLowerCase();
   const flooring = String(room.flooring || "").toLowerCase();
-  if (flooring.includes("wood")) return "url(#wood-floor)";
-  if (flooring.includes("tile")) return "url(#tile-floor)";
-  if (flooring.includes("balcony") || flooring.includes("grid")) return "url(#balcony-floor)";
-  if (flooring.includes("kitchen") || flooring.includes("warm")) return "url(#kitchen-floor)";
+  if (flooring) {
+    if (flooring.includes("wood")) return "url(#wood-floor)";
+    if (flooring.includes("tile")) return "url(#tile-floor)";
+    if (flooring.includes("stone") || flooring.includes("balcony") || flooring.includes("grid"))
+      return "url(#balcony-floor)";
+    if (flooring.includes("kitchen") || flooring.includes("warm") || flooring.includes("plain"))
+      return "url(#kitchen-floor)";
+    return "url(#wood-floor)";
+  }
   if (name.includes("kitchen")) return "url(#kitchen-floor)";
   if (name.includes("bath")) return "url(#tile-floor)";
   if (name.includes("bed")) return "url(#wood-floor)";
@@ -159,6 +164,13 @@ function patternForRoom(room) {
 
 function baseColorForRoom(room) {
   const name = String(room.type || room.name || "").toLowerCase();
+  const flooring = String(room.flooring || "").toLowerCase();
+  if (flooring) {
+    if (flooring.includes("wood")) return "#e0d4c8";
+    if (flooring.includes("tile")) return "#90caf9";
+    if (flooring.includes("stone") || flooring.includes("balcony")) return "#cfd8dc";
+    if (flooring.includes("kitchen") || flooring.includes("plain")) return "#fff9c4";
+  }
   if (name.includes("kitchen")) return "#ffe082";
   if (name.includes("bath")) return "#90caf9";
   if (name.includes("bed")) return "#bcaaa4";
@@ -862,6 +874,257 @@ function renderLabels(svg, rooms, size) {
  * @param {Array<object>} rooms
  * @param {{ width:number, height:number }} size
  */
+function normToPx(p, size) {
+  return { x: p.x * size.width, y: p.y * size.height };
+}
+
+/**
+ * @param {SVGSVGElement} svg
+ * @param {{ segments?: Array<object> }|null} calibration
+ * @param {{ width:number, height:number }} size
+ * @param {{ from: {x:number,y:number}, to?: {x:number,y:number} }|null} draftSegment
+ */
+export function renderCalibrationOverlays(svg, calibration, size, draftSegment) {
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("class", "plan-calibration-layer");
+  g.setAttribute("pointer-events", "none");
+
+  function drawSegment(from, to, dashed) {
+    const a = normToPx(from, size);
+    const b = normToPx(to, size);
+    const line = document.createElementNS(NS, "line");
+    line.setAttribute("x1", String(a.x));
+    line.setAttribute("y1", String(a.y));
+    line.setAttribute("x2", String(b.x));
+    line.setAttribute("y2", String(b.y));
+    line.setAttribute("class", "plan-calibration-line");
+    if (dashed) line.setAttribute("stroke-dasharray", "6 4");
+    g.appendChild(line);
+    [a, b].forEach(function (pt) {
+      const dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("cx", String(pt.x));
+      dot.setAttribute("cy", String(pt.y));
+      dot.setAttribute("r", "5");
+      dot.setAttribute("class", "plan-calibration-dot");
+      g.appendChild(dot);
+    });
+  }
+
+  (calibration && calibration.segments ? calibration.segments : []).forEach(function (seg) {
+    const from = seg.from || seg.a;
+    const to = seg.to || seg.b;
+    if (!from || !to) return;
+    drawSegment(from, to, false);
+  });
+
+  if (draftSegment && draftSegment.from) {
+    if (draftSegment.to) drawSegment(draftSegment.from, draftSegment.to, true);
+    else {
+      const a = normToPx(draftSegment.from, size);
+      const dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("cx", String(a.x));
+      dot.setAttribute("cy", String(a.y));
+      dot.setAttribute("r", "6");
+      dot.setAttribute("class", "plan-calibration-dot plan-calibration-dot-draft");
+      g.appendChild(dot);
+    }
+  }
+
+  svg.appendChild(g);
+}
+
+/**
+ * @param {SVGSVGElement} svg
+ * @param {{ from: {x:number,y:number}, to: {x:number,y:number}, label: string }|null} measure
+ * @param {{ width:number, height:number }} size
+ * @param {{ from: {x:number,y:number}, to?: {x:number,y:number} }|null} draftSegment
+ */
+export function renderMeasureOverlay(svg, measure, size, draftSegment) {
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("class", "plan-measure-layer");
+  g.setAttribute("pointer-events", "none");
+
+  function drawSegment(from, to, label, dashed) {
+    const a = normToPx(from, size);
+    const b = normToPx(to, size);
+    const line = document.createElementNS(NS, "line");
+    line.setAttribute("x1", String(a.x));
+    line.setAttribute("y1", String(a.y));
+    line.setAttribute("x2", String(b.x));
+    line.setAttribute("y2", String(b.y));
+    line.setAttribute("class", "plan-measure-line");
+    if (dashed) line.setAttribute("stroke-dasharray", "5 4");
+    g.appendChild(line);
+    [a, b].forEach(function (pt) {
+      const dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("cx", String(pt.x));
+      dot.setAttribute("cy", String(pt.y));
+      dot.setAttribute("r", "5");
+      dot.setAttribute("class", "plan-measure-dot");
+      g.appendChild(dot);
+    });
+    if (label) {
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      const text = document.createElementNS(NS, "text");
+      text.setAttribute("x", String(mx));
+      text.setAttribute("y", String(my - 8));
+      text.setAttribute("class", "plan-measure-label");
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = label;
+      g.appendChild(text);
+    }
+  }
+
+  if (measure && measure.from && measure.to) {
+    drawSegment(measure.from, measure.to, measure.label || "", false);
+  }
+  if (draftSegment && draftSegment.from) {
+    if (draftSegment.to) drawSegment(draftSegment.from, draftSegment.to, "", true);
+    else {
+      const a = normToPx(draftSegment.from, size);
+      const dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("cx", String(a.x));
+      dot.setAttribute("cy", String(a.y));
+      dot.setAttribute("r", "6");
+      dot.setAttribute("class", "plan-measure-dot plan-measure-dot-draft");
+      g.appendChild(dot);
+    }
+  }
+
+  svg.appendChild(g);
+}
+
+/**
+ * @param {SVGSVGElement} svg
+ * @param {Array<object>} rooms
+ * @param {string|null} selectedRoomId
+ * @param {{ width:number, height:number }} size
+ */
+/**
+ * @param {SVGSVGElement} svg
+ * @param {Array<{x:number,y:number}>} points
+ * @param {{x:number,y:number}|null} cursor
+ * @param {string} areaLabel
+ * @param {{ width:number, height:number }} size
+ */
+export function renderDrawRoomOverlay(svg, points, cursor, areaLabel, size) {
+  if (!points || !points.length) return;
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("class", "plan-draw-room-layer");
+  g.setAttribute("pointer-events", "none");
+
+  const pts = points.map(function (p) {
+    return normToPx(p, size);
+  });
+  if (pts.length >= 2) {
+    const openPts = pts
+      .map(function (p) {
+        return p.x + "," + p.y;
+      })
+      .join(" ");
+    const polyline = document.createElementNS(NS, "polyline");
+    polyline.setAttribute("class", "plan-draw-room-line");
+    polyline.setAttribute("points", openPts + (cursor ? " " + cursor.x + "," + cursor.y : ""));
+    polyline.setAttribute("fill", "none");
+    g.appendChild(polyline);
+  }
+  if (pts.length >= 3) {
+    const closed = document.createElementNS(NS, "polygon");
+    closed.setAttribute("class", "plan-draw-room-fill");
+    closed.setAttribute(
+      "points",
+      pts
+        .map(function (p) {
+          return p.x + "," + p.y;
+        })
+        .join(" ")
+    );
+    g.appendChild(closed);
+  }
+  pts.forEach(function (p, i) {
+    const dot = document.createElementNS(NS, "circle");
+    dot.setAttribute("cx", String(p.x));
+    dot.setAttribute("cy", String(p.y));
+    dot.setAttribute("r", i === 0 ? "7" : "5");
+    dot.setAttribute("class", "plan-draw-room-dot" + (i === 0 ? " plan-draw-room-dot-first" : ""));
+    g.appendChild(dot);
+  });
+  if (cursor && pts.length) {
+    const dot = document.createElementNS(NS, "circle");
+    dot.setAttribute("cx", String(cursor.x));
+    dot.setAttribute("cy", String(cursor.y));
+    dot.setAttribute("r", "4");
+    dot.setAttribute("class", "plan-draw-room-dot plan-draw-room-dot-cursor");
+    g.appendChild(dot);
+  }
+  if (areaLabel && pts.length >= 2) {
+    const anchor = cursor || pts[pts.length - 1];
+    const text = document.createElementNS(NS, "text");
+    text.setAttribute("x", String(anchor.x + 10));
+    text.setAttribute("y", String(anchor.y - 10));
+    text.setAttribute("class", "plan-draw-room-area-label");
+    text.textContent = "(" + areaLabel + ")";
+    g.appendChild(text);
+  }
+  svg.appendChild(g);
+}
+
+/**
+ * @param {SVGSVGElement} svg
+ * @param {object|null} room
+ * @param {string} areaLabel
+ * @param {string|null} dimLabel
+ * @param {{ width:number, height:number }} size
+ */
+export function renderRoomMeasurementBadge(svg, room, areaLabel, dimLabel, size) {
+  if (!room || !room.polygon || room.polygon.length < 3) return;
+  const c = room.labelPoint || polygonCentroid(room.polygon);
+  const px = c.x * size.width;
+  const py = c.y * size.height;
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("class", "plan-room-measure-badge");
+  g.setAttribute("pointer-events", "none");
+  const lines = [areaLabel];
+  if (dimLabel) lines.push(dimLabel);
+  const lineH = 14;
+  const padX = 8;
+  const padY = 6;
+  const w = Math.max(72, Math.max.apply(null, lines.map(function (l) { return l.length * 6.5; })));
+  const h = lines.length * lineH + padY * 2;
+  const rect = document.createElementNS(NS, "rect");
+  rect.setAttribute("x", String(px - w / 2));
+  rect.setAttribute("y", String(py - h / 2));
+  rect.setAttribute("width", String(w));
+  rect.setAttribute("height", String(h));
+  rect.setAttribute("rx", "4");
+  rect.setAttribute("class", "plan-room-measure-badge-bg");
+  g.appendChild(rect);
+  lines.forEach(function (line, i) {
+    const text = document.createElementNS(NS, "text");
+    text.setAttribute("x", String(px));
+    text.setAttribute("y", String(py - h / 2 + padY + (i + 0.75) * lineH));
+    text.setAttribute("class", "plan-room-measure-badge-text");
+    text.setAttribute("text-anchor", "middle");
+    text.textContent = line;
+    g.appendChild(text);
+  });
+  svg.appendChild(g);
+}
+
+export function renderSelectedRoomOutline(svg, rooms, selectedRoomId, size) {
+  if (!selectedRoomId) return;
+  const room = (rooms || []).find(function (r) {
+    return (r.id || r.name || "") === selectedRoomId;
+  });
+  if (!room || !room.polygon || room.polygon.length < 3) return;
+  const poly = document.createElementNS(NS, "polygon");
+  poly.setAttribute("class", "plan-room-selected");
+  poly.setAttribute("points", pointsAttr(room.polygon, size.width, size.height));
+  poly.setAttribute("fill", "none");
+  svg.appendChild(poly);
+}
+
 export function renderVertexHandles(svg, rooms, size) {
   (rooms || []).forEach(function (room) {
     if (!room.polygon || room.polygon.length < 3) return;
@@ -888,7 +1151,7 @@ export function renderVertexHandles(svg, rooms, size) {
  * @param {string|null} activeRoomId
  * @param {string|null} selectedFurnitureId
  * @param {{ width:number, height:number }} size
- * @param {{ vertexEditMode?: boolean }} [options]
+ * @param {{ vertexEditMode?: boolean, selectedRoomId?: string|null, scaleDraft?: object|null, measureResult?: object|null, measureDraft?: object|null, drawRoomPoints?: Array<object>|null, drawRoomCursor?: object|null, drawRoomAreaLabel?: string, roomMeasureBadge?: object|null, selectedVertex?: object|null }} [options]
  */
 export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size, options) {
   const opts = options || {};
@@ -902,7 +1165,42 @@ export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size, o
   renderWalls(svg, data.walls || [], size);
   renderDetailedFurniture(svg, data.furniture || [], data.furniture_catalog || [], selectedFurnitureId, size);
   renderLabels(svg, data.rooms || [], size);
+  renderSelectedRoomOutline(svg, data.rooms || [], opts.selectedRoomId || null, size);
+  if (opts.roomMeasureBadge) {
+    renderRoomMeasurementBadge(
+      svg,
+      opts.roomMeasureBadge.room,
+      opts.roomMeasureBadge.areaLabel,
+      opts.roomMeasureBadge.dimLabel,
+      size
+    );
+  }
+  renderCalibrationOverlays(svg, data.calibration || null, size, opts.scaleDraft || null);
+  renderMeasureOverlay(svg, opts.measureResult || null, size, opts.measureDraft || null);
+  if (opts.drawRoomPoints && opts.drawRoomPoints.length) {
+    renderDrawRoomOverlay(
+      svg,
+      opts.drawRoomPoints,
+      opts.drawRoomCursor || null,
+      opts.drawRoomAreaLabel || "",
+      size
+    );
+  }
   if (opts.vertexEditMode) {
     renderVertexHandles(svg, data.rooms || [], size);
+    if (opts.selectedVertex) {
+      const handles = svg.querySelectorAll(".plan-vertex-handle");
+      handles.forEach(function (h) {
+        const rid = h.getAttribute("data-room-id");
+        const vi = parseInt(h.getAttribute("data-vertex-index"), 10);
+        if (
+          rid === opts.selectedVertex.roomId &&
+          vi === opts.selectedVertex.index
+        ) {
+          h.setAttribute("fill", "#e91e63");
+          h.setAttribute("r", "8");
+        }
+      });
+    }
   }
 }

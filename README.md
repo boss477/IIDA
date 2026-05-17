@@ -4,16 +4,17 @@ Floor plan viewer and analysis workspace.
 
 ## Projects
 
-- **`floor-plan-viewer/`** — Vite + Flask app: upload architectural floor plans, analyze with Gemini vision, render interactive SVG with rooms, walls, windows, and movable furniture.
+- **`floor-plan-viewer/`** — Vite + Flask app: upload architectural floor plans, analyze with **Fireworks Kimi** vision, render interactive SVG with rooms, walls, furniture, and manual editing tools (scale, measure, draw rooms, undo).
+
+See **[floor-plan-viewer/README.md](floor-plan-viewer/README.md)** for full feature list and setup.
 
 ## Quick start
 
 ```bash
 cd floor-plan-viewer
 npm install
-npm run build
-cp .env.example .env   # add GEMINI_API_KEY
-python app.py
+cp .env.example .env   # add FIREWORKS_API_KEY
+npm start
 ```
 
 Open http://127.0.0.1:5173

@@ -11,10 +11,21 @@ import {
 import { uploadPlanRaster } from "../services/supabase.js";
 import { bindPlanFileInput } from "../upload/uploadDropzone.js";
 import { validateAnalysis } from "../lib/analysisValidation.js";
+import { createUndoStack } from "../lib/undoStack.js";
 import { renderPlan } from "./svgRenderer.js";
 import { updateRoomHighlight } from "./roomOverlay.js";
 import { hideTooltip, showRoomTooltip } from "./tooltip.js";
-import { mountToolbar } from "./toolbar.js";
+import { mountToolbar, setToolButtonActive } from "./toolbar.js";
+import {
+  clampNorm,
+  computeMeasure,
+  createRoomFromPreset,
+  findEdgeInsertIndex,
+  formatAreaLabel,
+  formatRoomDimensions,
+  isNearPoint,
+  upsertCalibrationSegment,
+} from "./planTools.js";
 import {
   animateFurnitureDragEnd,
   animateFurnitureDragStart,
@@ -56,8 +67,16 @@ export function initFloorPlanViewer() {
   var selectedFurnitureId = null;
   var lastOpenedFile = null;
   var geometryOnly = false;
-  var vertexEditMode = false;
+  var toolMode = "view";
   var vertexDrag = null;
+  var selectedRoomId = null;
+  var scaleDraft = null;
+  var measureDraft = null;
+  var measureResult = null;
+  var drawRoomPoints = null;
+  var drawRoomCursor = null;
+  var selectedVertex = null;
+  var undoStack = createUndoStack(50);
 
   var llmStatus = document.createElement("span");
   llmStatus.className = "llm-status";
@@ -69,12 +88,12 @@ export function initFloorPlanViewer() {
   var serverProvider =
     typeof window !== "undefined" && window.__SERVER_VISION_PROVIDER__
       ? String(window.__SERVER_VISION_PROVIDER__)
-      : "gemini";
+      : "fireworks";
   llmStatus.textContent = isVisionConfigured()
     ? serverModel
       ? "LLM: " + serverProvider + " / " + serverModel + " (after Open image)"
-      : "LLM: Gemini vision (after Open image)"
-    : "LLM: run npm start (Gemini via /api/analyze)";
+      : "LLM: Fireworks vision (after Open image)"
+    : "LLM: run npm start (Fireworks via /api/analyze)";
 
   function setLlmStatus(msg) {
     llmStatus.textContent = msg;
@@ -87,7 +106,7 @@ export function initFloorPlanViewer() {
   var hint = document.createElement("span");
   hint.className = "toolbar-hint";
   hint.textContent =
-    "Click a piece to select · drag to move · double-click room to focus · [ ] rotate · arrows nudge · Esc deselect";
+    "Click room to pick floor · Set scale / Measure tools · Edit vertices · Esc exits tools";
 
   var scaleEl = document.createElement("span");
   scaleEl.className = "calibration-scale";
@@ -130,6 +149,7 @@ export function initFloorPlanViewer() {
     scaleEl.textContent = calibrationState
       ? "Scale: " + calibrationState.summary
       : "Scale: calibration segments invalid";
+    syncRoomMeasureReadout();
   }
 
   function syncReplaceSelect() {
@@ -253,12 +273,374 @@ export function initFloorPlanViewer() {
     } else hideTooltip(tip);
   }
 
+  function syncRoomMeasureReadout() {
+    if (!selectedRoomId) {
+      tb.roomMeasureReadout.textContent = "Room: click a room for area";
+      return;
+    }
+    var room = data.rooms.find(function (r) {
+      return (r.id || r.name || "") === selectedRoomId;
+    });
+    if (!room || !room.polygon) {
+      tb.roomMeasureReadout.textContent = "Room: —";
+      return;
+    }
+    var area = formatAreaLabel(
+      room.polygon,
+      plan.naturalWidth,
+      plan.naturalHeight,
+      calibrationState
+    );
+    var dims = formatRoomDimensions(
+      room.polygon,
+      plan.naturalWidth,
+      plan.naturalHeight,
+      calibrationState
+    );
+    var label = room.name || room.id || "Room";
+    tb.roomMeasureReadout.textContent = label + ": " + area + (dims ? " · " + dims : "");
+    if (calibrationState && dims) {
+      room.dimensionsText = dims;
+    }
+  }
+
+  function getRoomMeasureBadge() {
+    if (!selectedRoomId) return null;
+    var room = data.rooms.find(function (r) {
+      return (r.id || r.name || "") === selectedRoomId;
+    });
+    if (!room || !room.polygon) return null;
+    return {
+      room: room,
+      areaLabel: formatAreaLabel(
+        room.polygon,
+        plan.naturalWidth,
+        plan.naturalHeight,
+        calibrationState
+      ),
+      dimLabel: formatRoomDimensions(
+        room.polygon,
+        plan.naturalWidth,
+        plan.naturalHeight,
+        calibrationState
+      ),
+    };
+  }
+
+  function syncToolUi() {
+    setToolButtonActive(tb.btnSetScale, toolMode === "setScale");
+    setToolButtonActive(tb.btnMeasure, toolMode === "measure");
+    setToolButtonActive(tb.btnVertexEdit, toolMode === "vertexEdit");
+    setToolButtonActive(tb.btnDrawRoom, toolMode === "drawRoom");
+    tb.finishRoomBtn.hidden = toolMode !== "drawRoom";
+    tb.deleteVertexBtn.hidden = toolMode !== "vertexEdit" || !selectedVertex;
+    if (toolMode === "setScale" || toolMode === "measure" || toolMode === "drawRoom") {
+      planWrap.classList.add("tool-crosshair");
+    } else {
+      planWrap.classList.remove("tool-crosshair");
+    }
+    if (toolMode === "setScale" && scaleDraft && scaleDraft.from && scaleDraft.to) {
+      tb.scaleLengthWrap.hidden = false;
+    } else if (toolMode !== "setScale") {
+      tb.scaleLengthWrap.hidden = true;
+    }
+    if (toolMode === "setScale") {
+      hint.textContent =
+        "Set scale: click two points on a known dimension, enter length (m), then Apply.";
+    } else if (toolMode === "measure") {
+      hint.textContent = "Measure: click start point, then end point.";
+    } else if (toolMode === "vertexEdit") {
+      hint.textContent =
+        "Drag handles · click edge to add vertex · select handle + Delete to remove · measurements update live.";
+    } else if (toolMode === "drawRoom") {
+      hint.textContent =
+        "Add room: click corners · click first point or Finish room (≥3 pts) · area shown live · set scale for m².";
+    } else {
+      hint.textContent =
+        "Set scale first for m² · Add room / Measure / Edit vertices · Undo (Ctrl+Z) for add room & delete vertex";
+    }
+  }
+
+  function setToolMode(mode) {
+    var prev = toolMode;
+    toolMode = mode;
+    scaleDraft = null;
+    measureDraft = null;
+    drawRoomPoints = null;
+    drawRoomCursor = null;
+    selectedVertex = null;
+    if (prev === "measure" && mode !== "measure") {
+      measureResult = null;
+      updateMeasureReadout("—");
+    }
+    if (mode !== "setScale") tb.scaleLengthWrap.hidden = true;
+    syncToolUi();
+    render();
+  }
+
+  function toggleTool(mode) {
+    if (toolMode === mode) setToolMode("view");
+    else {
+      if (mode !== "measure") {
+        measureResult = null;
+        updateMeasureReadout("—");
+      }
+      toolMode = mode;
+      scaleDraft = null;
+      measureDraft = null;
+      drawRoomPoints = mode === "drawRoom" ? [] : null;
+      drawRoomCursor = null;
+      selectedVertex = null;
+      selectedFurnitureId = null;
+      syncReplaceSelect();
+      syncToolUi();
+      render();
+    }
+  }
+
+  function syncFloorSelect() {
+    if (!selectedRoomId) {
+      tb.floorSelect.disabled = true;
+      tb.floorSelect.value = "";
+      return;
+    }
+    var room = data.rooms.find(function (r) {
+      return (r.id || r.name || "") === selectedRoomId;
+    });
+    tb.floorSelect.disabled = !room;
+    if (room) {
+      tb.floorSelect.value = room.flooring || "wood";
+    }
+  }
+
+  function selectRoom(room) {
+    selectedRoomId = room ? room.id || room.name || null : null;
+    selectedVertex = null;
+    syncFloorSelect();
+    syncRoomMeasureReadout();
+    render();
+  }
+
+  function captureUndoState() {
+    return {
+      rooms: JSON.parse(JSON.stringify(data.rooms || [])),
+      selectedRoomId: selectedRoomId,
+      selectedVertex: selectedVertex
+        ? { roomId: selectedVertex.roomId, index: selectedVertex.index }
+        : null,
+    };
+  }
+
+  function syncUndoButton() {
+    if (tb.btnUndo) tb.btnUndo.disabled = !undoStack.canUndo();
+  }
+
+  function pushUndo(action) {
+    undoStack.push({ action: action, state: captureUndoState() });
+    syncUndoButton();
+  }
+
+  function performUndo() {
+    if (!undoStack.canUndo()) return;
+    var entry = undoStack.pop();
+    data.rooms = entry.state.rooms;
+    selectedRoomId = entry.state.selectedRoomId;
+    selectedVertex = entry.state.selectedVertex;
+    syncFloorSelect();
+    syncRoomMeasureReadout();
+    syncUndoButton();
+    render();
+    var label =
+      entry.action === "addRoom"
+        ? "Undid add room"
+        : entry.action === "deleteVertex"
+          ? "Undid delete vertex"
+          : "Undid change";
+    tb.roomMeasureReadout.textContent = label;
+  }
+
+  function finishDrawRoom() {
+    if (!drawRoomPoints || drawRoomPoints.length < 3) {
+      alert("Add at least 3 corners, then Finish room.");
+      return;
+    }
+    var presetId = tb.roomPresetSelect.value || "other";
+    var room = createRoomFromPreset(data.rooms, presetId, drawRoomPoints);
+    var area = formatAreaLabel(
+      room.polygon,
+      plan.naturalWidth,
+      plan.naturalHeight,
+      calibrationState
+    );
+    var dims = formatRoomDimensions(
+      room.polygon,
+      plan.naturalWidth,
+      plan.naturalHeight,
+      calibrationState
+    );
+    if (dims) room.dimensionsText = dims;
+    pushUndo("addRoom");
+    data.rooms.push(room);
+    drawRoomPoints = null;
+    drawRoomCursor = null;
+    toolMode = "view";
+    selectRoom(room);
+    tb.roomMeasureReadout.textContent =
+      (room.name || room.id) + ": " + area + (dims ? " · " + dims : "") + " (added)";
+    syncToolUi();
+    render();
+  }
+
+  function deleteSelectedVertex() {
+    if (!selectedVertex) return;
+    var room = data.rooms.find(function (r) {
+      return (r.id || r.name || "") === selectedVertex.roomId;
+    });
+    if (!room || !room.polygon || room.polygon.length <= 3) {
+      alert("A room needs at least 3 corners.");
+      return;
+    }
+    pushUndo("deleteVertex");
+    room.polygon.splice(selectedVertex.index, 1);
+    selectedVertex = null;
+    syncRoomMeasureReadout();
+    render();
+  }
+
+  function updateMeasureReadout(text) {
+    tb.measureReadout.textContent = "Measure: " + (text || "—");
+  }
+
+  function applyScaleFromInput() {
+    if (!scaleDraft || !scaleDraft.from || !scaleDraft.to) {
+      alert("Click two points on the plan first.");
+      return;
+    }
+    var lengthM = parseFloat(tb.scaleLengthInput.value, 10);
+    if (!isFinite(lengthM) || lengthM <= 0) {
+      alert("Enter a valid length in meters.");
+      return;
+    }
+    upsertCalibrationSegment(data, scaleDraft.from, scaleDraft.to, lengthM);
+    scaleDraft = null;
+    tb.scaleLengthWrap.hidden = true;
+    tb.scaleLengthInput.value = "";
+    refreshCalibration();
+    render();
+  }
+
+  function handlePlanToolClick(n) {
+    var pt = clampNorm(n.x, n.y);
+    if (toolMode === "setScale") {
+      if (!scaleDraft || !scaleDraft.from) {
+        scaleDraft = { from: pt, to: null };
+      } else if (!scaleDraft.to) {
+        scaleDraft.to = pt;
+        tb.scaleLengthWrap.hidden = false;
+        tb.scaleLengthInput.focus();
+      } else {
+        scaleDraft = { from: pt, to: null };
+        tb.scaleLengthWrap.hidden = true;
+      }
+      render();
+      return;
+    }
+    if (toolMode === "measure") {
+      if (!measureDraft || !measureDraft.from) {
+        measureDraft = { from: pt, to: null };
+      } else {
+        measureDraft.to = pt;
+        var result = computeMeasure(
+          measureDraft.from,
+          measureDraft.to,
+          plan.naturalWidth,
+          plan.naturalHeight,
+          calibrationState
+        );
+        measureResult = {
+          from: measureDraft.from,
+          to: measureDraft.to,
+          label: result.label,
+        };
+        updateMeasureReadout(result.label);
+        measureDraft = null;
+      }
+      render();
+      return;
+    }
+    if (toolMode === "drawRoom") {
+      if (!drawRoomPoints) drawRoomPoints = [];
+      if (
+        drawRoomPoints.length >= 3 &&
+        isNearPoint(pt, drawRoomPoints[0], 0.02)
+      ) {
+        finishDrawRoom();
+        return;
+      }
+      drawRoomPoints.push(pt);
+      render();
+      return;
+    }
+    if (toolMode === "view") {
+      var room = pickRoomAtNorm(pt.x, pt.y);
+      selectRoom(room);
+    }
+  }
+
+  function handleVertexEditClick(pt, handle) {
+    if (handle) {
+      var roomId = handle.getAttribute("data-room-id");
+      var vi = parseInt(handle.getAttribute("data-vertex-index"), 10);
+      selectedVertex = { roomId: roomId, index: vi };
+      if (!selectedRoomId) selectedRoomId = roomId;
+      syncFloorSelect();
+      syncRoomMeasureReadout();
+      render();
+      return;
+    }
+    var room = selectedRoomId
+      ? data.rooms.find(function (r) {
+          return (r.id || r.name || "") === selectedRoomId;
+        })
+      : pickRoomAtNorm(pt.x, pt.y);
+    if (!room || !room.polygon) return;
+    selectedRoomId = room.id || room.name || null;
+    var insertAt = findEdgeInsertIndex(pt, room.polygon, 0.025);
+    if (insertAt != null) {
+      room.polygon.splice(insertAt, 0, { x: pt.x, y: pt.y });
+      selectedVertex = { roomId: selectedRoomId, index: insertAt };
+      syncRoomMeasureReadout();
+      render();
+    }
+  }
+
   function render() {
     layoutOverlay();
+    var drawLabel = "";
+    if (drawRoomPoints && drawRoomPoints.length >= 2) {
+      var preview = drawRoomPoints.slice();
+      if (drawRoomCursor) preview.push(drawRoomCursor);
+      drawLabel = formatAreaLabel(
+        preview,
+        plan.naturalWidth,
+        plan.naturalHeight,
+        calibrationState
+      );
+    }
     renderPlan(overlay, data, activeRoomId, selectedFurnitureId, imageSize(), {
-      vertexEditMode: vertexEditMode,
+      vertexEditMode: toolMode === "vertexEdit",
+      selectedRoomId: selectedRoomId,
+      scaleDraft: scaleDraft,
+      measureResult: measureResult,
+      measureDraft: measureDraft,
+      drawRoomPoints: drawRoomPoints,
+      drawRoomCursor: toolMode === "drawRoom" ? drawRoomCursor : null,
+      drawRoomAreaLabel: drawLabel,
+      roomMeasureBadge: getRoomMeasureBadge(),
+      selectedVertex: selectedVertex,
     });
     updateWallWarning();
+    syncToolUi();
   }
 
   function onPlanLoaded() {
@@ -327,7 +709,17 @@ export function initFloorPlanViewer() {
     normalizeFurnitureIds();
     selectedFurnitureId = null;
     activeRoomId = null;
+    selectedRoomId = null;
+    selectedVertex = null;
+    scaleDraft = null;
+    measureDraft = null;
+    drawRoomPoints = null;
+    drawRoomCursor = null;
+    undoStack.clear();
+    syncUndoButton();
     syncReplaceSelect();
+    syncFloorSelect();
+    syncRoomMeasureReadout();
     refreshCalibration();
     render();
   }
@@ -336,7 +728,7 @@ export function initFloorPlanViewer() {
     setLlmStatus("LLM: reading image...");
     fileToImageBase64(file)
       .then(function (img) {
-        setLlmStatus("LLM: analyzing with Gemini...");
+        setLlmStatus("LLM: analyzing with Fireworks...");
         return analyzeFloorPlan(img.imageBase64, img.mimeType);
       })
       .then(function (analysis) {
@@ -478,12 +870,45 @@ export function initFloorPlanViewer() {
       geometryOnly = !geometryOnly;
       applyGeometryOnlyClass();
     },
+    toggleSetScale: function () {
+      toggleTool("setScale");
+    },
+    toggleMeasure: function () {
+      toggleTool("measure");
+    },
     toggleVertexEdit: function () {
-      vertexEditMode = !vertexEditMode;
-      if (vertexEditMode) {
+      toggleTool("vertexEdit");
+    },
+    toggleDrawRoom: function () {
+      if (toolMode === "drawRoom") {
+        drawRoomPoints = null;
+        drawRoomCursor = null;
+        setToolMode("view");
+      } else {
+        toolMode = "drawRoom";
+        drawRoomPoints = [];
+        drawRoomCursor = null;
+        selectedVertex = null;
         selectedFurnitureId = null;
+        scaleDraft = null;
+        measureDraft = null;
         syncReplaceSelect();
+        syncToolUi();
+        render();
       }
+    },
+    finishDrawRoom: finishDrawRoom,
+    deleteSelectedVertex: deleteSelectedVertex,
+    undo: performUndo,
+    applyScale: applyScaleFromInput,
+    onFloorChange: function () {
+      if (!selectedRoomId) return;
+      var room = data.rooms.find(function (r) {
+        return (r.id || r.name || "") === selectedRoomId;
+      });
+      if (!room) return;
+      room.flooring = tb.floorSelect.value;
+      syncRoomMeasureReadout();
       render();
     },
   });
@@ -527,26 +952,49 @@ export function initFloorPlanViewer() {
     "mousedown",
     function (e) {
       if (e.button !== 0) return;
-      var handle = e.target.closest(".plan-vertex-handle");
-      if (vertexEditMode && handle) {
+      if (toolMode === "setScale" || toolMode === "measure" || toolMode === "drawRoom") {
         e.stopPropagation();
         stopCameraTween();
-        var roomId = handle.getAttribute("data-room-id");
-        var vi = parseInt(handle.getAttribute("data-vertex-index"), 10);
-        var room = data.rooms.find(function (r) {
-          return (r.id || r.name || "") === roomId;
-        });
-        if (!room || !room.polygon || isNaN(vi)) return;
-        var pt = room.polygon[vi];
-        var n = clientToPlanNormalized(e.clientX, e.clientY);
-        vertexDrag = {
-          roomId: roomId,
-          index: vi,
-          ox: pt.x,
-          oy: pt.y,
-          nx: n.x,
-          ny: n.y,
-        };
+        var nTool = clientToPlanNormalized(e.clientX, e.clientY);
+        handlePlanToolClick(nTool);
+        return;
+      }
+      if (toolMode === "view" && !e.target.closest("[data-furniture-id]")) {
+        var nRoom = clientToPlanNormalized(e.clientX, e.clientY);
+        var hitRoom = pickRoomAtNorm(nRoom.x, nRoom.y);
+        e.stopPropagation();
+        selectRoom(hitRoom);
+        return;
+      }
+      var handle = e.target.closest(".plan-vertex-handle");
+      if (toolMode === "vertexEdit") {
+        e.stopPropagation();
+        stopCameraTween();
+        var nVert = clientToPlanNormalized(e.clientX, e.clientY);
+        if (handle) {
+          var roomId = handle.getAttribute("data-room-id");
+          var vi = parseInt(handle.getAttribute("data-vertex-index"), 10);
+          var room = data.rooms.find(function (r) {
+            return (r.id || r.name || "") === roomId;
+          });
+          if (!room || !room.polygon || isNaN(vi)) return;
+          selectedVertex = { roomId: roomId, index: vi };
+          selectedRoomId = roomId;
+          var pt = room.polygon[vi];
+          vertexDrag = {
+            roomId: roomId,
+            index: vi,
+            ox: pt.x,
+            oy: pt.y,
+            nx: nVert.x,
+            ny: nVert.y,
+          };
+          syncFloorSelect();
+          syncRoomMeasureReadout();
+          render();
+          return;
+        }
+        handleVertexEditClick(nVert, null);
         return;
       }
       var g = e.target.closest("[data-furniture-id]");
@@ -593,6 +1041,13 @@ export function initFloorPlanViewer() {
 
   planWrap.addEventListener("mousemove", function (e) {
     if (furnitureDrag || vertexDrag) return;
+    if (toolMode === "drawRoom") {
+      var nDraw = clientToPlanNormalized(e.clientX, e.clientY);
+      drawRoomCursor = clampNorm(nDraw.x, nDraw.y);
+      render();
+      return;
+    }
+    if (toolMode === "setScale" || toolMode === "measure") return;
     var n = clientToPlanNormalized(e.clientX, e.clientY);
     if (n.x < 0 || n.x > 1 || n.y < 0 || n.y > 1) {
       activeRoomId = null;
@@ -623,6 +1078,7 @@ export function initFloorPlanViewer() {
 
   viewport.addEventListener("mousedown", function (e) {
     if (e.button !== 0) return;
+    if (toolMode === "setScale" || toolMode === "measure" || toolMode === "drawRoom") return;
     if (e.target.closest("[data-furniture-id]")) return;
     if (e.target.closest(".plan-vertex-handle")) return;
     stopCameraTween();
@@ -638,6 +1094,7 @@ export function initFloorPlanViewer() {
         var pt = room.polygon[vertexDrag.index];
         pt.x = Math.min(1, Math.max(0, vertexDrag.ox + (n.x - vertexDrag.nx)));
         pt.y = Math.min(1, Math.max(0, vertexDrag.oy + (n.y - vertexDrag.ny)));
+        syncRoomMeasureReadout();
         render();
       }
       return;
@@ -670,6 +1127,7 @@ export function initFloorPlanViewer() {
   window.addEventListener("mouseup", function () {
     if (vertexDrag) {
       vertexDrag = null;
+      syncRoomMeasureReadout();
       return;
     }
     if (furnitureDrag) {
@@ -693,10 +1151,40 @@ export function initFloorPlanViewer() {
     if (e.key === "Escape") {
       stopCameraTween();
       selectedFurnitureId = null;
-      vertexEditMode = false;
+      toolMode = "view";
       vertexDrag = null;
+      scaleDraft = null;
+      measureDraft = null;
+      drawRoomPoints = null;
+      drawRoomCursor = null;
+      selectedVertex = null;
       syncReplaceSelect();
+      syncToolUi();
       render();
+      e.preventDefault();
+      return;
+    }
+    if (toolMode === "setScale" && e.key === "Enter") {
+      applyScaleFromInput();
+      e.preventDefault();
+      return;
+    }
+    if (toolMode === "drawRoom" && e.key === "Enter") {
+      finishDrawRoom();
+      e.preventDefault();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+      performUndo();
+      e.preventDefault();
+      return;
+    }
+    if (
+      (e.key === "Delete" || e.key === "Backspace") &&
+      toolMode === "vertexEdit" &&
+      selectedVertex
+    ) {
+      deleteSelectedVertex();
       e.preventDefault();
       return;
     }
@@ -756,4 +1244,8 @@ export function initFloorPlanViewer() {
   };
   plan.src = "/fixtures/reference-floor.png";
   loadFixture();
+  syncToolUi();
+  syncFloorSelect();
+  syncRoomMeasureReadout();
+  syncUndoButton();
 }
