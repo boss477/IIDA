@@ -165,28 +165,6 @@
       }
     ]
   },
-  "walls": [
-    {
-      "id": "shell",
-      "role": "exterior",
-      "points": [
-        { "x": 0.024, "y": 0.100 },
-        { "x": 0.976, "y": 0.100 },
-        { "x": 0.976, "y": 0.960 },
-        { "x": 0.024, "y": 0.960 },
-        { "x": 0.024, "y": 0.100 }
-      ],
-      "thickness": 0.014
-    },
-    { "id": "p-master-passage",  "role": "partition", "points": [{ "x": 0.400, "y": 0.100 }, { "x": 0.400, "y": 0.510 }], "thickness": 0.008 },
-    { "id": "p-bed2-passage",    "role": "partition", "points": [{ "x": 0.600, "y": 0.100 }, { "x": 0.600, "y": 0.510 }], "thickness": 0.008 },
-    { "id": "p-top-horizontal",  "role": "partition", "points": [{ "x": 0.400, "y": 0.365 }, { "x": 0.600, "y": 0.365 }], "thickness": 0.008 },
-    { "id": "p-bath-split",      "role": "partition", "points": [{ "x": 0.500, "y": 0.100 }, { "x": 0.500, "y": 0.195 }], "thickness": 0.007 },
-    { "id": "p-kitchen-left",    "role": "partition", "points": [{ "x": 0.130, "y": 0.460 }, { "x": 0.400, "y": 0.460 }], "thickness": 0.008 },
-    { "id": "p-dining-mid",      "role": "partition", "points": [{ "x": 0.400, "y": 0.510 }, { "x": 0.600, "y": 0.510 }], "thickness": 0.008 },
-    { "id": "p-living-right",    "role": "partition", "points": [{ "x": 0.600, "y": 0.510 }, { "x": 0.600, "y": 0.960 }], "thickness": 0.008 },
-    { "id": "p-kitchen-bottom",  "role": "partition", "points": [{ "x": 0.024, "y": 0.720 }, { "x": 0.400, "y": 0.720 }], "thickness": 0.008 }
-  ],
   "doors": [
     {
       "id": "door-master-passage",

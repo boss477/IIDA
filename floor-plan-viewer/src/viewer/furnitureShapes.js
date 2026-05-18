@@ -256,6 +256,73 @@ var PAL = {
   cushion: "#d0d4d6",
 };
 
+/**
+ * Top-down Shearling / catalog sofa — distinct from grey renderSofa and apartment_living_sofa.
+ * Drawn in unit space (~1 wide); parent applies pixel scale.
+ * @param {SVGGElement} g
+ * @param {number} [seats]
+ */
+export function appendShearlingSofaTopDown(g, seats) {
+  seats = Math.max(1, Math.min(6, seats || 2));
+  var tan = "#c8a882";
+  var tanDark = "#a0784e";
+  var tanBack = "#b8956e";
+  var stroke = "#5c4033";
+
+  var body = document.createElementNS(NS, "rect");
+  body.setAttribute("x", "-0.46");
+  body.setAttribute("y", "-0.14");
+  body.setAttribute("width", "0.92");
+  body.setAttribute("height", "0.28");
+  body.setAttribute("rx", "0.05");
+  body.setAttribute("fill", tan);
+  body.setAttribute("stroke", stroke);
+  body.setAttribute("stroke-width", "0.008");
+  body.setAttribute("class", "furniture-icon-sofa-body");
+  g.appendChild(body);
+
+  var back = document.createElementNS(NS, "rect");
+  back.setAttribute("x", "-0.46");
+  back.setAttribute("y", "-0.22");
+  back.setAttribute("width", "0.92");
+  back.setAttribute("height", "0.1");
+  back.setAttribute("rx", "0.04");
+  back.setAttribute("fill", tanBack);
+  back.setAttribute("stroke", stroke);
+  back.setAttribute("stroke-width", "0.006");
+  g.appendChild(back);
+
+  var armW = 0.07;
+  ["-0.46", "0.39"].forEach(function (x) {
+    var arm = document.createElementNS(NS, "rect");
+    arm.setAttribute("x", x);
+    arm.setAttribute("y", "-0.12");
+    arm.setAttribute("width", String(armW));
+    arm.setAttribute("height", "0.22");
+    arm.setAttribute("rx", "0.03");
+    arm.setAttribute("fill", tanDark);
+    arm.setAttribute("stroke", stroke);
+    arm.setAttribute("stroke-width", "0.005");
+    g.appendChild(arm);
+  });
+
+  var innerW = 0.92 - armW * 2;
+  var cushionW = innerW / seats;
+  var gap = 0.012;
+  for (var i = 0; i < seats; i++) {
+    var cush = document.createElementNS(NS, "rect");
+    cush.setAttribute("x", String(-0.46 + armW + i * cushionW + gap));
+    cush.setAttribute("y", "-0.1");
+    cush.setAttribute("width", String(Math.max(0.04, cushionW - gap * 2)));
+    cush.setAttribute("height", "0.18");
+    cush.setAttribute("rx", "0.03");
+    cush.setAttribute("fill", "#e8d4bc");
+    cush.setAttribute("stroke", stroke);
+    cush.setAttribute("stroke-width", "0.004");
+    g.appendChild(cush);
+  }
+}
+
 function appendSofa(g) {
   var body = document.createElementNS(NS, "rect");
   body.setAttribute("x", "-0.42");
@@ -354,6 +421,7 @@ export function appendVectorFurniture(g, shapeKey) {
   else if (key === "apartment_living_media") appendLivingMediaBench(g);
   else if (key === "apartment_bath") appendApartmentBath(g);
   else if (key === "sofa") appendSofa(g);
+  else if (key === "shearling_sofa") appendShearlingSofaTopDown(g, 2);
   else if (key === "bed") appendBed(g);
   else if (key === "island") appendIsland(g);
   else if (key === "table") appendTable(g);

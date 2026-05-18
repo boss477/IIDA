@@ -2,37 +2,36 @@ import {
   polygonAreaSqMFromNorm,
   resolveCalibration,
 } from "../lib/calibration.js";
+import { constrainFurnitureMove } from "../lib/furnitureBounds.js";
 import { pointInPolygon, polygonArea } from "../lib/geometry.js";
 import {
   analyzeFloorPlan,
   fileToImageBase64,
   isVisionConfigured,
+  visionAnalyzingMessage,
+  visionProviderLabel,
 } from "../services/vision.js";
-import { uploadPlanRaster } from "../services/supabase.js";
+import {
+  applyCatalogSkuToItem,
+  catalogById,
+  createFurnitureNearItem,
+  findSofaCatalogRow,
+  formatCatalogDimensionsLabel,
+  isSofaCatalogRow,
+  parseSofaParams,
+} from "../lib/catalogSizing.js";
+import {
+  getAvailableSofaColors,
+  sofaColorLabel,
+  SOFA_COLOR_OPTIONS,
+} from "../lib/sofaColors.js";
+import { fetchShearlingCatalog, uploadPlanRaster } from "../services/supabase.js";
 import { bindPlanFileInput } from "../upload/uploadDropzone.js";
-import { validateAnalysis } from "../lib/analysisValidation.js";
-import { createUndoStack } from "../lib/undoStack.js";
 import { renderPlan } from "./svgRenderer.js";
 import { updateRoomHighlight } from "./roomOverlay.js";
-import { hideTooltip, showRoomTooltip } from "./tooltip.js";
-import { mountToolbar, setToolButtonActive } from "./toolbar.js";
-import {
-  clampNorm,
-  computeMeasure,
-  createRoomFromPreset,
-  findEdgeInsertIndex,
-  formatAreaLabel,
-  formatRoomDimensions,
-  isNearPoint,
-  upsertCalibrationSegment,
-} from "./planTools.js";
-import {
-  animateFurnitureDragEnd,
-  animateFurnitureDragStart,
-  animateFurnitureSelect,
-  focusRoomCamera,
-  killPlanTweens,
-} from "./planAnimations.js";
+import { hideTooltip, showFurnitureTooltip, showRoomTooltip } from "./tooltip.js";
+import { createGeometryEditor } from "./geometryEditor.js";
+import { mountFileToolbar, mountGeometryToolbar } from "./toolbar.js";
 
 var PLAN_SIZE = { width: 1000, height: 1000 };
 
@@ -62,38 +61,24 @@ export function initFloorPlanViewer() {
   var ty = 0;
   var drag = null;
   var furnitureDrag = null;
-  var cameraTween = null;
   var activeRoomId = null;
   var selectedFurnitureId = null;
   var lastOpenedFile = null;
-  var geometryOnly = false;
-  var toolMode = "view";
+  var shearlingCatalog = null;
+  var lastFurniturePointer = { clientX: 0, clientY: 0 };
   var vertexDrag = null;
-  var selectedRoomId = null;
-  var scaleDraft = null;
-  var measureDraft = null;
-  var measureResult = null;
-  var drawRoomPoints = null;
-  var drawRoomCursor = null;
-  var selectedVertex = null;
-  var undoStack = createUndoStack(50);
+  var geo = null;
 
   var llmStatus = document.createElement("span");
   llmStatus.className = "llm-status";
   llmStatus.setAttribute("aria-live", "polite");
-  var serverModel =
-    typeof window !== "undefined" && window.__SERVER_VISION_MODEL__
-      ? String(window.__SERVER_VISION_MODEL__)
+  var serverLm =
+    typeof window !== "undefined" && window.__SERVER_LM_MODEL__
+      ? String(window.__SERVER_LM_MODEL__)
       : "";
-  var serverProvider =
-    typeof window !== "undefined" && window.__SERVER_VISION_PROVIDER__
-      ? String(window.__SERVER_VISION_PROVIDER__)
-      : "fireworks";
   llmStatus.textContent = isVisionConfigured()
-    ? serverModel
-      ? "LLM: " + serverProvider + " / " + serverModel + " (after Open image)"
-      : "LLM: Fireworks vision (after Open image)"
-    : "LLM: run npm start (Fireworks via /api/analyze)";
+    ? "LLM: " + (serverLm || visionProviderLabel()) + " (after Open image)"
+    : "LLM: set VITE_GEMINI_API_KEY, LM Studio, or VITE_ANALYZE_API in .env";
 
   function setLlmStatus(msg) {
     llmStatus.textContent = msg;
@@ -103,42 +88,86 @@ export function initFloorPlanViewer() {
   replaceSel.setAttribute("aria-label", "Replace selected furniture");
   replaceSel.disabled = true;
 
+  var sofaColorSel = document.createElement("select");
+  sofaColorSel.setAttribute("aria-label", "Sofa color");
+  sofaColorSel.disabled = true;
+  sofaColorSel.title = "Switch sofa upholstery color";
+
+  var addSofaNearBtn = document.createElement("button");
+  addSofaNearBtn.type = "button";
+  addSofaNearBtn.className = "btn";
+  addSofaNearBtn.textContent = "+ Sofa near";
+  addSofaNearBtn.disabled = true;
+  addSofaNearBtn.title =
+    "Place a new sofa beside the selection (SKU from Replace with, or first sofa in catalog)";
+
   var hint = document.createElement("span");
   hint.className = "toolbar-hint";
   hint.textContent =
-    "Click room to pick floor · Set scale / Measure tools · Edit vertices · Esc exits tools";
+    "Select · Replace / Color / + Sofa near · drag · [ ] rotate · arrows · Esc deselect";
 
   var scaleEl = document.createElement("span");
   scaleEl.className = "calibration-scale";
   scaleEl.textContent = "Scale: load plan + JSON calibration";
 
-  var wallWarnEl = document.createElement("span");
-  wallWarnEl.className = "wall-warning";
-  wallWarnEl.setAttribute("aria-live", "polite");
+  var furnitureInfoEl = document.createElement("span");
+  furnitureInfoEl.className = "furniture-info";
+  furnitureInfoEl.setAttribute("aria-live", "polite");
+  furnitureInfoEl.textContent = "Furniture: click a piece, then pick a Shearling SKU";
 
-  function updateWallWarning() {
-    if (!data.walls || !data.walls.length) {
-      wallWarnEl.textContent =
-        "Warning: walls[] is empty — wall layer not drawn. Re-analyze or add walls in JSON.";
-    } else {
-      wallWarnEl.textContent = "";
-    }
+  function getCatalogContext() {
+    return {
+      mmPerPixel: calibrationState ? calibrationState.mmPerPixel : null,
+      planWidthPx: plan.naturalWidth || PLAN_SIZE.width,
+      planHeightPx: plan.naturalHeight || PLAN_SIZE.height,
+      walls: data.walls || [],
+      rooms: data.rooms || [],
+    };
   }
 
-  function applyGeometryOnlyClass() {
-    if (geometryOnly) planWrap.classList.add("geometry-only");
-    else planWrap.classList.remove("geometry-only");
+  function applyCatalogToAllFurniture() {
+    var catalog = data.furniture_catalog || [];
+    if (!catalog.length) return;
+    (data.furniture || []).forEach(function (f) {
+      if (!f.catalogId) return;
+      var row = catalogById(catalog, f.catalogId);
+      if (row) applyCatalogSkuToItem(f, row, getCatalogContext());
+    });
+  }
+
+  function updateFurnitureSelectionUi(pointerEvent) {
+    if (pointerEvent) {
+      lastFurniturePointer.clientX = pointerEvent.clientX;
+      lastFurniturePointer.clientY = pointerEvent.clientY;
+    }
+    if (!selectedFurnitureId) {
+      furnitureInfoEl.textContent = "Furniture: click a piece, then pick a Shearling SKU";
+      return;
+    }
+    var item = data.furniture.find(function (f) {
+      return f.id === selectedFurnitureId;
+    });
+    if (!item) {
+      furnitureInfoEl.textContent = "Furniture: (selection lost)";
+      return;
+    }
+    var row = catalogById(data.furniture_catalog || [], item.catalogId);
+    if (row) {
+      var label = formatCatalogDimensionsLabel(row, item);
+      furnitureInfoEl.textContent = label;
+      showFurnitureTooltip(tip, lastFurniturePointer, label);
+    } else if (item.catalogId) {
+      furnitureInfoEl.textContent =
+        item.catalogId + " — use Replace with to pick a Shearling SKU";
+    } else {
+      furnitureInfoEl.textContent = "Selected — use Replace with for DB size + icon";
+    }
   }
 
   function refreshCalibration() {
-    if (!plan.naturalWidth || !plan.naturalHeight) {
+    if (!plan.naturalWidth || !plan.naturalHeight || !data.calibration) {
       calibrationState = null;
-      scaleEl.textContent = "Scale: load a floor plan image first";
-      return;
-    }
-    if (!data.calibration) {
-      calibrationState = null;
-      scaleEl.textContent = "Scale: optional (room labels show printed dimensions)";
+      scaleEl.textContent = "Scale: no calibration in JSON or image not loaded";
       return;
     }
     calibrationState = resolveCalibration(
@@ -149,7 +178,79 @@ export function initFloorPlanViewer() {
     scaleEl.textContent = calibrationState
       ? "Scale: " + calibrationState.summary
       : "Scale: calibration segments invalid";
-    syncRoomMeasureReadout();
+    if (calibrationState) applyCatalogToAllFurniture();
+  }
+
+  function isItemSofa(item) {
+    if (!item) return false;
+    var t = String(item.type || item.shape || "").toLowerCase();
+    if (t.indexOf("sofa") >= 0 || t.indexOf("lounge") >= 0 || t.indexOf("sectional") >= 0) return true;
+    var row = catalogById(data.furniture_catalog || [], item.catalogId);
+    return row ? isSofaCatalogRow(row) : false;
+  }
+
+  function activeSofaColorId(item, catalogRow) {
+    if (!item) return "";
+    if (item.sofaColorOverride) return item.sofaColorOverride;
+    if (item.sofaParams && item.sofaParams.color) return item.sofaParams.color;
+    if (catalogRow) {
+      var parsed = parseSofaParams(catalogRow.keywords, catalogRow.product_name);
+      return parsed.color || "";
+    }
+    return "";
+  }
+
+  function syncSofaColorSelect() {
+    sofaColorSel.innerHTML = "";
+    if (!selectedFurnitureId) {
+      sofaColorSel.disabled = true;
+      return;
+    }
+    var item = data.furniture.find(function (f) {
+      return f.id === selectedFurnitureId;
+    });
+    if (!item || !isItemSofa(item)) {
+      sofaColorSel.disabled = true;
+      return;
+    }
+    var catalog = data.furniture_catalog || [];
+    var row = catalogById(catalog, item.catalogId);
+    var available = getAvailableSofaColors(row, catalog);
+    var availableSet = {};
+    available.forEach(function (id) {
+      availableSet[id] = true;
+    });
+
+    var autoOpt = document.createElement("option");
+    autoOpt.value = "";
+    autoOpt.textContent = "Auto (from catalog)";
+    sofaColorSel.appendChild(autoOpt);
+
+    var grpAvail = document.createElement("optgroup");
+    grpAvail.label = available.length ? "Available for this line" : "Popular";
+    available.forEach(function (id) {
+      var o = document.createElement("option");
+      o.value = id;
+      o.textContent = sofaColorLabel(id);
+      grpAvail.appendChild(o);
+    });
+    sofaColorSel.appendChild(grpAvail);
+
+    var grpAll = document.createElement("optgroup");
+    grpAll.label = "All colors";
+    SOFA_COLOR_OPTIONS.forEach(function (opt) {
+      if (availableSet[opt.id]) return;
+      var o = document.createElement("option");
+      o.value = opt.id;
+      o.textContent = opt.label;
+      grpAll.appendChild(o);
+    });
+    if (grpAll.children.length) sofaColorSel.appendChild(grpAll);
+
+    var current = activeSofaColorId(item, row);
+    sofaColorSel.value = item.sofaColorOverride ? item.sofaColorOverride : current || "";
+    if (!sofaColorSel.value && item.sofaColorOverride !== undefined) sofaColorSel.value = "";
+    sofaColorSel.disabled = false;
   }
 
   function syncReplaceSelect() {
@@ -166,46 +267,61 @@ export function initFloorPlanViewer() {
       });
       if (item) replaceSel.value = item.catalogId;
       replaceSel.disabled = false;
+      addSofaNearBtn.disabled = false;
     } else {
       replaceSel.disabled = true;
+      addSofaNearBtn.disabled = true;
     }
+    syncSofaColorSelect();
+  }
+
+  function applySofaColorToItem(item, colorId) {
+    if (!item || !isItemSofa(item)) return;
+    var row = catalogById(data.furniture_catalog || [], item.catalogId);
+    if (!item.sofaParams) {
+      item.sofaParams = row
+        ? parseSofaParams(row.keywords, row.product_name)
+        : { seats: 2, hasLounge: false, hasArm: true };
+    }
+    if (!colorId) {
+      delete item.sofaColorOverride;
+      if (row) {
+        var parsed = parseSofaParams(row.keywords, row.product_name);
+        if (parsed.color) item.sofaParams.color = parsed.color;
+        else delete item.sofaParams.color;
+      } else {
+        delete item.sofaParams.color;
+      }
+    } else {
+      item.sofaColorOverride = colorId;
+      item.sofaParams.color = colorId;
+    }
+  }
+
+  function addSofaNearSelected() {
+    if (!selectedFurnitureId) return;
+    var anchor = data.furniture.find(function (f) {
+      return f.id === selectedFurnitureId;
+    });
+    if (!anchor) return;
+    var catalog = data.furniture_catalog || [];
+    var row = findSofaCatalogRow(catalog, replaceSel.value);
+    if (!row) {
+      alert("No sofa SKU found. Load the Shearling catalog or pick a sofa in Replace with.");
+      return;
+    }
+    var newItem = createFurnitureNearItem(anchor, row, getCatalogContext());
+    if (!newItem) return;
+    if (!data.furniture) data.furniture = [];
+    data.furniture.push(newItem);
+    selectedFurnitureId = newItem.id;
+    syncReplaceSelect();
+    updateFurnitureSelectionUi();
+    render();
   }
 
   function applyTransform() {
     content.style.transform = "translate(" + tx + "px," + ty + "px) scale(" + s + ")";
-  }
-
-  function getTransform() {
-    return { s: s, tx: tx, ty: ty };
-  }
-
-  function setTransform(next) {
-    s = next.s;
-    tx = next.tx;
-    ty = next.ty;
-    applyTransform();
-  }
-
-  function furnitureTransform(item) {
-    var cx = (item.x || 0) * PLAN_SIZE.width;
-    var cy = (item.y || 0) * PLAN_SIZE.height;
-    var rotation = item.rotationDeg || item.rotation || 0;
-    return "translate(" + cx + " " + cy + ") rotate(" + rotation + ")";
-  }
-
-  function furnitureElementById(id) {
-    var els = overlay.querySelectorAll("[data-furniture-id]");
-    for (var i = 0; i < els.length; i++) {
-      if (els[i].getAttribute("data-furniture-id") === id) return els[i];
-    }
-    return null;
-  }
-
-  function stopCameraTween() {
-    if (cameraTween) {
-      cameraTween.kill();
-      cameraTween = null;
-    }
   }
 
   function layoutOverlay() {
@@ -213,14 +329,10 @@ export function initFloorPlanViewer() {
     overlay.style.position = "absolute";
     overlay.style.left = "0";
     overlay.style.top = "0";
-    overlay.style.width = PLAN_SIZE.width + "px";
-    overlay.style.height = PLAN_SIZE.height + "px";
+    overlay.style.width = "100%";
+    overlay.style.height = "100%";
     overlay.style.right = "auto";
     overlay.style.bottom = "auto";
-    planWrap.style.width = PLAN_SIZE.width + "px";
-    planWrap.style.height = PLAN_SIZE.height + "px";
-    plan.style.width = PLAN_SIZE.width + "px";
-    plan.style.height = PLAN_SIZE.height + "px";
   }
 
   function imageSize() {
@@ -273,380 +385,13 @@ export function initFloorPlanViewer() {
     } else hideTooltip(tip);
   }
 
-  function syncRoomMeasureReadout() {
-    if (!selectedRoomId) {
-      tb.roomMeasureReadout.textContent = "Room: click a room for area";
-      return;
-    }
-    var room = data.rooms.find(function (r) {
-      return (r.id || r.name || "") === selectedRoomId;
-    });
-    if (!room || !room.polygon) {
-      tb.roomMeasureReadout.textContent = "Room: —";
-      return;
-    }
-    var area = formatAreaLabel(
-      room.polygon,
-      plan.naturalWidth,
-      plan.naturalHeight,
-      calibrationState
-    );
-    var dims = formatRoomDimensions(
-      room.polygon,
-      plan.naturalWidth,
-      plan.naturalHeight,
-      calibrationState
-    );
-    var label = room.name || room.id || "Room";
-    tb.roomMeasureReadout.textContent = label + ": " + area + (dims ? " · " + dims : "");
-    if (calibrationState && dims) {
-      room.dimensionsText = dims;
-    }
-  }
-
-  function getRoomMeasureBadge() {
-    if (!selectedRoomId) return null;
-    var room = data.rooms.find(function (r) {
-      return (r.id || r.name || "") === selectedRoomId;
-    });
-    if (!room || !room.polygon) return null;
-    return {
-      room: room,
-      areaLabel: formatAreaLabel(
-        room.polygon,
-        plan.naturalWidth,
-        plan.naturalHeight,
-        calibrationState
-      ),
-      dimLabel: formatRoomDimensions(
-        room.polygon,
-        plan.naturalWidth,
-        plan.naturalHeight,
-        calibrationState
-      ),
-    };
-  }
-
-  function syncToolUi() {
-    setToolButtonActive(tb.btnSetScale, toolMode === "setScale");
-    setToolButtonActive(tb.btnMeasure, toolMode === "measure");
-    setToolButtonActive(tb.btnVertexEdit, toolMode === "vertexEdit");
-    setToolButtonActive(tb.btnDrawRoom, toolMode === "drawRoom");
-    tb.finishRoomBtn.hidden = toolMode !== "drawRoom";
-    tb.deleteVertexBtn.hidden = toolMode !== "vertexEdit" || !selectedVertex;
-    if (toolMode === "setScale" || toolMode === "measure" || toolMode === "drawRoom") {
-      planWrap.classList.add("tool-crosshair");
-    } else {
-      planWrap.classList.remove("tool-crosshair");
-    }
-    if (toolMode === "setScale" && scaleDraft && scaleDraft.from && scaleDraft.to) {
-      tb.scaleLengthWrap.hidden = false;
-    } else if (toolMode !== "setScale") {
-      tb.scaleLengthWrap.hidden = true;
-    }
-    if (toolMode === "setScale") {
-      hint.textContent =
-        "Set scale: click two points on a known dimension, enter length (m), then Apply.";
-    } else if (toolMode === "measure") {
-      hint.textContent = "Measure: click start point, then end point.";
-    } else if (toolMode === "vertexEdit") {
-      hint.textContent =
-        "Drag handles · click edge to add vertex · select handle + Delete to remove · measurements update live.";
-    } else if (toolMode === "drawRoom") {
-      hint.textContent =
-        "Add room: click corners · click first point or Finish room (≥3 pts) · area shown live · set scale for m².";
-    } else {
-      hint.textContent =
-        "Set scale first for m² · Add room / Measure / Edit vertices · Undo (Ctrl+Z) for add room & delete vertex";
-    }
-  }
-
-  function setToolMode(mode) {
-    var prev = toolMode;
-    toolMode = mode;
-    scaleDraft = null;
-    measureDraft = null;
-    drawRoomPoints = null;
-    drawRoomCursor = null;
-    selectedVertex = null;
-    if (prev === "measure" && mode !== "measure") {
-      measureResult = null;
-      updateMeasureReadout("—");
-    }
-    if (mode !== "setScale") tb.scaleLengthWrap.hidden = true;
-    syncToolUi();
-    render();
-  }
-
-  function toggleTool(mode) {
-    if (toolMode === mode) setToolMode("view");
-    else {
-      if (mode !== "measure") {
-        measureResult = null;
-        updateMeasureReadout("—");
-      }
-      toolMode = mode;
-      scaleDraft = null;
-      measureDraft = null;
-      drawRoomPoints = mode === "drawRoom" ? [] : null;
-      drawRoomCursor = null;
-      selectedVertex = null;
-      selectedFurnitureId = null;
-      syncReplaceSelect();
-      syncToolUi();
-      render();
-    }
-  }
-
-  function syncFloorSelect() {
-    if (!selectedRoomId) {
-      tb.floorSelect.disabled = true;
-      tb.floorSelect.value = "";
-      return;
-    }
-    var room = data.rooms.find(function (r) {
-      return (r.id || r.name || "") === selectedRoomId;
-    });
-    tb.floorSelect.disabled = !room;
-    if (room) {
-      tb.floorSelect.value = room.flooring || "wood";
-    }
-  }
-
-  function selectRoom(room) {
-    selectedRoomId = room ? room.id || room.name || null : null;
-    selectedVertex = null;
-    syncFloorSelect();
-    syncRoomMeasureReadout();
-    render();
-  }
-
-  function captureUndoState() {
-    return {
-      rooms: JSON.parse(JSON.stringify(data.rooms || [])),
-      selectedRoomId: selectedRoomId,
-      selectedVertex: selectedVertex
-        ? { roomId: selectedVertex.roomId, index: selectedVertex.index }
-        : null,
-    };
-  }
-
-  function syncUndoButton() {
-    if (tb.btnUndo) tb.btnUndo.disabled = !undoStack.canUndo();
-  }
-
-  function pushUndo(action) {
-    undoStack.push({ action: action, state: captureUndoState() });
-    syncUndoButton();
-  }
-
-  function performUndo() {
-    if (!undoStack.canUndo()) return;
-    var entry = undoStack.pop();
-    data.rooms = entry.state.rooms;
-    selectedRoomId = entry.state.selectedRoomId;
-    selectedVertex = entry.state.selectedVertex;
-    syncFloorSelect();
-    syncRoomMeasureReadout();
-    syncUndoButton();
-    render();
-    var label =
-      entry.action === "addRoom"
-        ? "Undid add room"
-        : entry.action === "deleteVertex"
-          ? "Undid delete vertex"
-          : "Undid change";
-    tb.roomMeasureReadout.textContent = label;
-  }
-
-  function finishDrawRoom() {
-    if (!drawRoomPoints || drawRoomPoints.length < 3) {
-      alert("Add at least 3 corners, then Finish room.");
-      return;
-    }
-    var presetId = tb.roomPresetSelect.value || "other";
-    var room = createRoomFromPreset(data.rooms, presetId, drawRoomPoints);
-    var area = formatAreaLabel(
-      room.polygon,
-      plan.naturalWidth,
-      plan.naturalHeight,
-      calibrationState
-    );
-    var dims = formatRoomDimensions(
-      room.polygon,
-      plan.naturalWidth,
-      plan.naturalHeight,
-      calibrationState
-    );
-    if (dims) room.dimensionsText = dims;
-    pushUndo("addRoom");
-    data.rooms.push(room);
-    drawRoomPoints = null;
-    drawRoomCursor = null;
-    toolMode = "view";
-    selectRoom(room);
-    tb.roomMeasureReadout.textContent =
-      (room.name || room.id) + ": " + area + (dims ? " · " + dims : "") + " (added)";
-    syncToolUi();
-    render();
-  }
-
-  function deleteSelectedVertex() {
-    if (!selectedVertex) return;
-    var room = data.rooms.find(function (r) {
-      return (r.id || r.name || "") === selectedVertex.roomId;
-    });
-    if (!room || !room.polygon || room.polygon.length <= 3) {
-      alert("A room needs at least 3 corners.");
-      return;
-    }
-    pushUndo("deleteVertex");
-    room.polygon.splice(selectedVertex.index, 1);
-    selectedVertex = null;
-    syncRoomMeasureReadout();
-    render();
-  }
-
-  function updateMeasureReadout(text) {
-    tb.measureReadout.textContent = "Measure: " + (text || "—");
-  }
-
-  function applyScaleFromInput() {
-    if (!scaleDraft || !scaleDraft.from || !scaleDraft.to) {
-      alert("Click two points on the plan first.");
-      return;
-    }
-    var lengthM = parseFloat(tb.scaleLengthInput.value, 10);
-    if (!isFinite(lengthM) || lengthM <= 0) {
-      alert("Enter a valid length in meters.");
-      return;
-    }
-    upsertCalibrationSegment(data, scaleDraft.from, scaleDraft.to, lengthM);
-    scaleDraft = null;
-    tb.scaleLengthWrap.hidden = true;
-    tb.scaleLengthInput.value = "";
-    refreshCalibration();
-    render();
-  }
-
-  function handlePlanToolClick(n) {
-    var pt = clampNorm(n.x, n.y);
-    if (toolMode === "setScale") {
-      if (!scaleDraft || !scaleDraft.from) {
-        scaleDraft = { from: pt, to: null };
-      } else if (!scaleDraft.to) {
-        scaleDraft.to = pt;
-        tb.scaleLengthWrap.hidden = false;
-        tb.scaleLengthInput.focus();
-      } else {
-        scaleDraft = { from: pt, to: null };
-        tb.scaleLengthWrap.hidden = true;
-      }
-      render();
-      return;
-    }
-    if (toolMode === "measure") {
-      if (!measureDraft || !measureDraft.from) {
-        measureDraft = { from: pt, to: null };
-      } else {
-        measureDraft.to = pt;
-        var result = computeMeasure(
-          measureDraft.from,
-          measureDraft.to,
-          plan.naturalWidth,
-          plan.naturalHeight,
-          calibrationState
-        );
-        measureResult = {
-          from: measureDraft.from,
-          to: measureDraft.to,
-          label: result.label,
-        };
-        updateMeasureReadout(result.label);
-        measureDraft = null;
-      }
-      render();
-      return;
-    }
-    if (toolMode === "drawRoom") {
-      if (!drawRoomPoints) drawRoomPoints = [];
-      if (
-        drawRoomPoints.length >= 3 &&
-        isNearPoint(pt, drawRoomPoints[0], 0.02)
-      ) {
-        finishDrawRoom();
-        return;
-      }
-      drawRoomPoints.push(pt);
-      render();
-      return;
-    }
-    if (toolMode === "view") {
-      var room = pickRoomAtNorm(pt.x, pt.y);
-      selectRoom(room);
-    }
-  }
-
-  function handleVertexEditClick(pt, handle) {
-    if (handle) {
-      var roomId = handle.getAttribute("data-room-id");
-      var vi = parseInt(handle.getAttribute("data-vertex-index"), 10);
-      selectedVertex = { roomId: roomId, index: vi };
-      if (!selectedRoomId) selectedRoomId = roomId;
-      syncFloorSelect();
-      syncRoomMeasureReadout();
-      render();
-      return;
-    }
-    var room = selectedRoomId
-      ? data.rooms.find(function (r) {
-          return (r.id || r.name || "") === selectedRoomId;
-        })
-      : pickRoomAtNorm(pt.x, pt.y);
-    if (!room || !room.polygon) return;
-    selectedRoomId = room.id || room.name || null;
-    var insertAt = findEdgeInsertIndex(pt, room.polygon, 0.025);
-    if (insertAt != null) {
-      room.polygon.splice(insertAt, 0, { x: pt.x, y: pt.y });
-      selectedVertex = { roomId: selectedRoomId, index: insertAt };
-      syncRoomMeasureReadout();
-      render();
-    }
-  }
-
   function render() {
     layoutOverlay();
-    var drawLabel = "";
-    if (drawRoomPoints && drawRoomPoints.length >= 2) {
-      var preview = drawRoomPoints.slice();
-      if (drawRoomCursor) preview.push(drawRoomCursor);
-      drawLabel = formatAreaLabel(
-        preview,
-        plan.naturalWidth,
-        plan.naturalHeight,
-        calibrationState
-      );
-    }
-    renderPlan(overlay, data, activeRoomId, selectedFurnitureId, imageSize(), {
-      vertexEditMode: toolMode === "vertexEdit",
-      selectedRoomId: selectedRoomId,
-      scaleDraft: scaleDraft,
-      measureResult: measureResult,
-      measureDraft: measureDraft,
-      drawRoomPoints: drawRoomPoints,
-      drawRoomCursor: toolMode === "drawRoom" ? drawRoomCursor : null,
-      drawRoomAreaLabel: drawLabel,
-      roomMeasureBadge: getRoomMeasureBadge(),
-      selectedVertex: selectedVertex,
-    });
-    updateWallWarning();
-    syncToolUi();
+    var geoOpts = geo ? geo.getRenderOptions() : {};
+    renderPlan(overlay, data, activeRoomId, selectedFurnitureId, imageSize(), geoOpts);
   }
 
   function onPlanLoaded() {
-    if (plan.naturalWidth && plan.naturalHeight) {
-      PLAN_SIZE = { width: plan.naturalWidth, height: plan.naturalHeight };
-    }
     activeRoomId = null;
     render();
     refreshCalibration();
@@ -672,25 +417,7 @@ export function initFloorPlanViewer() {
     };
   }
 
-  function applyAnalysisFromObject(nextData, options) {
-    options = options || {};
-    var validationWarnings = nextData._validationWarnings;
-    if (validationWarnings) {
-      delete nextData._validationWarnings;
-    }
-    if (options.validate && plan.naturalWidth && plan.naturalHeight) {
-      var validation = validateAnalysis(
-        nextData,
-        plan.naturalWidth,
-        plan.naturalHeight
-      );
-      if (validation.blocking) {
-        throw new Error(validation.blocking);
-      }
-      if (validation.warnings && validation.warnings.length) {
-        validationWarnings = (validationWarnings || []).concat(validation.warnings);
-      }
-    }
+  function applyAnalysisFromObject(nextData) {
     data = Object.assign(
       {
         analysisVersion: "1.0",
@@ -708,31 +435,20 @@ export function initFloorPlanViewer() {
     data.rooms = Array.isArray(data.rooms) ? data.rooms : [];
     data.walls = Array.isArray(data.walls) ? data.walls : [];
     data.furniture = Array.isArray(data.furniture) ? data.furniture : [];
-    data.furniture_catalog = Array.isArray(data.furniture_catalog)
-      ? data.furniture_catalog
-      : [];
+    data.furniture_catalog =
+      shearlingCatalog && shearlingCatalog.length
+        ? shearlingCatalog
+        : Array.isArray(data.furniture_catalog)
+          ? data.furniture_catalog
+          : [];
     data.doors = Array.isArray(data.doors) ? data.doors : [];
     data.windows = Array.isArray(data.windows) ? data.windows : [];
     normalizeFurnitureIds();
     selectedFurnitureId = null;
     activeRoomId = null;
-    selectedRoomId = null;
-    selectedVertex = null;
-    scaleDraft = null;
-    measureDraft = null;
-    drawRoomPoints = null;
-    drawRoomCursor = null;
-    undoStack.clear();
-    syncUndoButton();
     syncReplaceSelect();
-    syncFloorSelect();
-    syncRoomMeasureReadout();
     refreshCalibration();
-    if (validationWarnings && validationWarnings.length) {
-      wallWarnEl.textContent = validationWarnings.join(" ");
-    } else {
-      wallWarnEl.textContent = "";
-    }
+    applyCatalogToAllFurniture();
     render();
   }
 
@@ -740,15 +456,27 @@ export function initFloorPlanViewer() {
     setLlmStatus("LLM: reading image...");
     fileToImageBase64(file)
       .then(function (img) {
-        setLlmStatus("LLM: analyzing with Fireworks (may take several minutes)...");
+        setLlmStatus(visionAnalyzingMessage());
         return analyzeFloorPlan(img.imageBase64, img.mimeType);
       })
       .then(function (analysis) {
-        applyAnalysisFromObject(analysis, { validate: true });
-        var warn = wallWarnEl.textContent
-          ? " (warnings — see yellow banner; use Edit vertices)"
-          : "";
-        setLlmStatus("LLM: analysis loaded" + warn);
+        var apply = function () {
+          applyAnalysisFromObject(analysis);
+          setLlmStatus("LLM: analysis loaded");
+        };
+        if (hasSb && (!shearlingCatalog || !shearlingCatalog.length)) {
+          return fetchShearlingCatalog()
+            .then(function (catalog) {
+              shearlingCatalog = catalog;
+              data.furniture_catalog = catalog;
+              apply();
+            })
+            .catch(function (err) {
+              apply();
+              throw err;
+            });
+        }
+        apply();
       })
       .catch(function (err) {
         var msg = err && err.message ? err.message : String(err);
@@ -757,52 +485,17 @@ export function initFloorPlanViewer() {
       });
   }
 
-  function slugForFilename(text) {
-    var slug = String(text || "floor-plan")
-      .toLowerCase()
-      .replace(/[^\w]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48);
-    return slug || "floor-plan";
-  }
-
-  function downloadJsonObject(obj, filename) {
-    var json = JSON.stringify(obj, null, 2);
+  function exportJson() {
+    var json = JSON.stringify(currentAnalysisJson(), null, 2);
     var blob = new Blob([json], { type: "application/json" });
     var url = URL.createObjectURL(blob);
     var a = document.createElement("a");
     a.href = url;
-    a.download = filename;
+    a.download = "floor-plan-analysis.json";
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-  }
-
-  function currentCorrectedFixtureJson() {
-    return {
-      analysisVersion: data.analysisVersion || "1.0",
-      label: data.label || "Corrected fixture",
-      calibration: data.calibration || null,
-      rooms: data.rooms || [],
-      walls: data.walls || [],
-      windows: data.windows || [],
-    };
-  }
-
-  function exportJson() {
-    downloadJsonObject(currentAnalysisJson(), "floor-plan-analysis.json");
-  }
-
-  function exportCorrectedJson() {
-    if (!(data.rooms && data.rooms.length) && !(data.walls && data.walls.length)) {
-      alert("No room or wall geometry to export. Analyze or load a plan first.");
-      return;
-    }
-    downloadJsonObject(
-      currentCorrectedFixtureJson(),
-      slugForFilename(data.label) + "-corrected.json"
-    );
   }
 
   function loadFixture() {
@@ -821,12 +514,15 @@ export function initFloorPlanViewer() {
 
   var hasSb =
     !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY;
+  var hasSbStorage = hasSb && import.meta.env.VITE_SUPABASE_STORAGE === "1";
 
-  var tb = mountToolbar(toolbarEl, {
+  toolbarEl.classList.add("bar--stacked");
+
+  var fileTb = mountFileToolbar(toolbarEl, {
     loadFixture: loadFixture,
-    uploadSupabase: hasSb
+    uploadSupabase: hasSbStorage
       ? function () {
-          var inp = tb.fileInput;
+          var inp = fileTb.fileInput;
           if (!inp.files || !inp.files[0]) {
             alert("Open an image first (Open image).");
             return;
@@ -849,20 +545,14 @@ export function initFloorPlanViewer() {
         }
       : undefined,
     zoomIn: function () {
-      stopCameraTween();
-      killPlanTweens(content);
       s *= 1.15;
       applyTransform();
     },
     zoomOut: function () {
-      stopCameraTween();
-      killPlanTweens(content);
       s /= 1.15;
       applyTransform();
     },
     reset: function () {
-      stopCameraTween();
-      killPlanTweens(content);
       s = 1;
       tx = ty = 0;
       applyTransform();
@@ -872,61 +562,80 @@ export function initFloorPlanViewer() {
       else document.exitFullscreen();
     },
     exportJson: exportJson,
-    exportCorrectedJson: exportCorrectedJson,
     analyzeLlm: function () {
-      var f = tb.fileInput.files && tb.fileInput.files[0];
+      var f = fileTb.fileInput.files && fileTb.fileInput.files[0];
       if (!f) {
         alert("Open an image first (Open image).");
         return;
       }
       runVisionOnFile(f);
     },
-    toggleGeometryOnly: function () {
-      geometryOnly = !geometryOnly;
-      applyGeometryOnlyClass();
-    },
+  });
+
+  var geoTb = mountGeometryToolbar(toolbarEl, {
     toggleSetScale: function () {
-      toggleTool("setScale");
+      geo.toggleTool("setScale");
     },
     toggleMeasure: function () {
-      toggleTool("measure");
+      geo.toggleTool("measure");
     },
     toggleVertexEdit: function () {
-      toggleTool("vertexEdit");
+      geo.toggleTool("vertexEdit");
     },
     toggleDrawRoom: function () {
-      if (toolMode === "drawRoom") {
-        drawRoomPoints = null;
-        drawRoomCursor = null;
-        setToolMode("view");
+      if (geo.getToolMode() === "drawRoom") {
+        geo.toggleTool("view");
       } else {
-        toolMode = "drawRoom";
-        drawRoomPoints = [];
-        drawRoomCursor = null;
-        selectedVertex = null;
-        selectedFurnitureId = null;
-        scaleDraft = null;
-        measureDraft = null;
-        syncReplaceSelect();
-        syncToolUi();
-        render();
+        geo.toggleTool("drawRoom");
       }
     },
-    finishDrawRoom: finishDrawRoom,
-    deleteSelectedVertex: deleteSelectedVertex,
-    undo: performUndo,
-    applyScale: applyScaleFromInput,
+    finishDrawRoom: function () {
+      geo.finishDrawRoom();
+    },
+    deleteSelectedVertex: function () {
+      geo.deleteSelectedVertex();
+    },
+    undo: function () {
+      geo.performUndo();
+    },
+    applyScale: function () {
+      geo.applyScaleFromInput();
+    },
     onFloorChange: function () {
-      if (!selectedRoomId) return;
-      var room = data.rooms.find(function (r) {
-        return (r.id || r.name || "") === selectedRoomId;
-      });
-      if (!room) return;
-      room.flooring = tb.floorSelect.value;
-      syncRoomMeasureReadout();
-      render();
+      geo.onFloorChange();
     },
   });
+  geo = createGeometryEditor({
+    data: data,
+    plan: plan,
+    planWrap: planWrap,
+    hintEl: hint,
+    geoTb: geoTb,
+    getCalibrationState: function () {
+      return calibrationState;
+    },
+    refreshCalibration: refreshCalibration,
+    pickRoomAtNorm: pickRoomAtNorm,
+    requestRender: render,
+    onToolModeChange: function (mode) {
+      if (mode !== "view") {
+        selectedFurnitureId = null;
+        furnitureDrag = null;
+        syncReplaceSelect();
+        updateFurnitureSelectionUi();
+        hideTooltip(tip);
+      }
+    },
+    onSelectRoom: function () {},
+  });
+  geo.init();
+
+  var furnitureRow = document.createElement("div");
+  furnitureRow.className = "toolbar-row toolbar-row--furniture";
+  var furnLab = document.createElement("span");
+  furnLab.className = "toolbar-group-label";
+  furnLab.textContent = "Furniture";
+  furnitureRow.appendChild(furnLab);
 
   var replaceLab = document.createElement("label");
   replaceLab.textContent = "Replace with ";
@@ -934,10 +643,36 @@ export function initFloorPlanViewer() {
   replaceLab.style.alignItems = "center";
   replaceLab.style.gap = "6px";
   replaceLab.appendChild(replaceSel);
-  toolbarEl.appendChild(replaceLab);
+
+  var colorLab = document.createElement("label");
+  colorLab.textContent = "Color ";
+  colorLab.style.display = "inline-flex";
+  colorLab.style.alignItems = "center";
+  colorLab.style.gap = "6px";
+  colorLab.appendChild(sofaColorSel);
+
+  replaceLab.appendChild(colorLab);
+  replaceLab.appendChild(addSofaNearBtn);
+  furnitureRow.appendChild(replaceLab);
+  toolbarEl.appendChild(furnitureRow);
+
+  sofaColorSel.addEventListener("change", function () {
+    if (!selectedFurnitureId) return;
+    var item = data.furniture.find(function (f) {
+      return f.id === selectedFurnitureId;
+    });
+    if (!item) return;
+    applySofaColorToItem(item, sofaColorSel.value);
+    updateFurnitureSelectionUi();
+    render();
+  });
+
+  addSofaNearBtn.addEventListener("click", function () {
+    addSofaNearSelected();
+  });
+  toolbarEl.appendChild(furnitureInfoEl);
   toolbarEl.appendChild(llmStatus);
   toolbarEl.appendChild(scaleEl);
-  toolbarEl.appendChild(wallWarnEl);
   toolbarEl.appendChild(hint);
 
   replaceSel.addEventListener("change", function () {
@@ -945,12 +680,25 @@ export function initFloorPlanViewer() {
     var item = data.furniture.find(function (f) {
       return f.id === selectedFurnitureId;
     });
-    if (item) item.catalogId = replaceSel.value;
+    if (!item) return;
+    var row = catalogById(data.furniture_catalog || [], replaceSel.value);
+    if (row) {
+      var prevColor = item.sofaColorOverride;
+      applyCatalogSkuToItem(item, row, getCatalogContext());
+      if (prevColor) {
+        item.sofaColorOverride = prevColor;
+        if (item.sofaParams) item.sofaParams.color = prevColor;
+      }
+    } else {
+      item.catalogId = replaceSel.value;
+    }
+    syncSofaColorSelect();
+    updateFurnitureSelectionUi();
     render();
   });
 
   bindPlanFileInput(
-    tb.fileInput,
+    fileTb.fileInput,
     plan,
     function () {
       onPlanLoaded();
@@ -967,103 +715,64 @@ export function initFloorPlanViewer() {
     "mousedown",
     function (e) {
       if (e.button !== 0) return;
-      if (toolMode === "setScale" || toolMode === "measure" || toolMode === "drawRoom") {
+      var n = clientToPlanNormalized(e.clientX, e.clientY);
+
+      if (geo.isGeometryClickMode()) {
         e.stopPropagation();
-        stopCameraTween();
-        var nTool = clientToPlanNormalized(e.clientX, e.clientY);
-        handlePlanToolClick(nTool);
+        geo.handlePlanClick(n);
         return;
       }
-      if (toolMode === "view" && !e.target.closest("[data-furniture-id]")) {
-        var nRoom = clientToPlanNormalized(e.clientX, e.clientY);
-        var hitRoom = pickRoomAtNorm(nRoom.x, nRoom.y);
-        e.stopPropagation();
-        selectRoom(hitRoom);
-        return;
-      }
+
       var handle = e.target.closest(".plan-vertex-handle");
-      if (toolMode === "vertexEdit") {
+      if (geo.getToolMode() === "vertexEdit") {
         e.stopPropagation();
-        stopCameraTween();
-        var nVert = clientToPlanNormalized(e.clientX, e.clientY);
-        if (handle) {
-          var roomId = handle.getAttribute("data-room-id");
-          var vi = parseInt(handle.getAttribute("data-vertex-index"), 10);
-          var room = data.rooms.find(function (r) {
-            return (r.id || r.name || "") === roomId;
-          });
-          if (!room || !room.polygon || isNaN(vi)) return;
-          selectedVertex = { roomId: roomId, index: vi };
-          selectedRoomId = roomId;
-          var pt = room.polygon[vi];
-          vertexDrag = {
-            roomId: roomId,
-            index: vi,
-            ox: pt.x,
-            oy: pt.y,
-            nx: nVert.x,
-            ny: nVert.y,
-          };
-          syncFloorSelect();
-          syncRoomMeasureReadout();
-          render();
-          return;
-        }
-        handleVertexEditClick(nVert, null);
+        geo.handleVertexMousedown(n, handle);
+        if (handle) vertexDrag = true;
         return;
       }
+
+      if (geo.blocksFurnitureInteraction()) return;
+
       var g = e.target.closest("[data-furniture-id]");
       if (g) {
         e.stopPropagation();
-        stopCameraTween();
         var id = g.getAttribute("data-furniture-id");
         var item = data.furniture.find(function (f) {
           return f.id === id;
         });
         if (!item) return;
-        var changedSelection = selectedFurnitureId !== id;
         selectedFurnitureId = id;
+        activeRoomId = null;
+        updateRoomHighlight(overlay, null);
         syncReplaceSelect();
-        if (changedSelection) render();
-        g = furnitureElementById(id) || g;
-        animateFurnitureSelect(g);
-        animateFurnitureDragStart(g);
-        var n = clientToPlanNormalized(e.clientX, e.clientY);
-        furnitureDrag = { id: id, nx: n.x, ny: n.y, ox: item.x, oy: item.y, el: g };
+        updateFurnitureSelectionUi(e);
+        render();
+        furnitureDrag = {
+          id: id,
+          nx: n.x,
+          ny: n.y,
+          ox: item.x,
+          oy: item.y,
+          lastValidX: item.x,
+          lastValidY: item.y,
+        };
+        return;
+      }
+
+      if (geo.getToolMode() === "view") {
+        e.stopPropagation();
+        geo.handlePlanClick(n);
       }
     },
     false
   );
 
-  planWrap.addEventListener("dblclick", function (e) {
-    if (e.target.closest("[data-furniture-id]")) return;
-    var n = clientToPlanNormalized(e.clientX, e.clientY);
-    var room = pickRoomAtNorm(n.x, n.y);
-    if (!room) return;
-    activeRoomId = room.id;
-    updateRoomHighlight(overlay, activeRoomId);
-    hideTooltip(tip);
-    stopCameraTween();
-    cameraTween = focusRoomCamera({
-      room: room,
-      viewportEl: viewport,
-      planWrapEl: planWrap,
-      getTransform: getTransform,
-      setTransform: setTransform,
-      padding: 0.12,
-    });
-  });
-
   planWrap.addEventListener("mousemove", function (e) {
     if (furnitureDrag || vertexDrag) return;
-    if (toolMode === "drawRoom") {
-      var nDraw = clientToPlanNormalized(e.clientX, e.clientY);
-      drawRoomCursor = clampNorm(nDraw.x, nDraw.y);
-      render();
-      return;
-    }
-    if (toolMode === "setScale" || toolMode === "measure") return;
     var n = clientToPlanNormalized(e.clientX, e.clientY);
+    if (geo.handleMousemove(n)) return;
+    if (geo.getToolMode() !== "view") return;
+    if (selectedFurnitureId) return;
     if (n.x < 0 || n.x > 1 || n.y < 0 || n.y > 1) {
       activeRoomId = null;
       updateRoomHighlight(overlay, null);
@@ -1083,7 +792,6 @@ export function initFloorPlanViewer() {
     "wheel",
     function (e) {
       e.preventDefault();
-      stopCameraTween();
       s *= e.deltaY < 0 ? 1.08 : 0.93;
       s = Math.min(6, Math.max(0.3, s));
       applyTransform();
@@ -1093,25 +801,15 @@ export function initFloorPlanViewer() {
 
   viewport.addEventListener("mousedown", function (e) {
     if (e.button !== 0) return;
-    if (toolMode === "setScale" || toolMode === "measure" || toolMode === "drawRoom") return;
-    if (e.target.closest("[data-furniture-id]")) return;
+    if (geo.isGeometryClickMode()) return;
     if (e.target.closest(".plan-vertex-handle")) return;
-    stopCameraTween();
+    if (e.target.closest("[data-furniture-id]")) return;
     drag = { x: e.clientX - tx, y: e.clientY - ty };
   });
   window.addEventListener("mousemove", function (e) {
     if (vertexDrag) {
-      var room = data.rooms.find(function (r) {
-        return (r.id || r.name || "") === vertexDrag.roomId;
-      });
-      if (room && room.polygon && room.polygon[vertexDrag.index]) {
-        var n = clientToPlanNormalized(e.clientX, e.clientY);
-        var pt = room.polygon[vertexDrag.index];
-        pt.x = Math.min(1, Math.max(0, vertexDrag.ox + (n.x - vertexDrag.nx)));
-        pt.y = Math.min(1, Math.max(0, vertexDrag.oy + (n.y - vertexDrag.ny)));
-        syncRoomMeasureReadout();
-        render();
-      }
+      var nVert = clientToPlanNormalized(e.clientX, e.clientY);
+      geo.handleVertexDragMove(nVert);
       return;
     }
     if (furnitureDrag) {
@@ -1122,15 +820,22 @@ export function initFloorPlanViewer() {
         var n = clientToPlanNormalized(e.clientX, e.clientY);
         var dx = n.x - furnitureDrag.nx;
         var dy = n.y - furnitureDrag.ny;
-        item.x = furnitureDrag.ox + dx;
-        item.y = furnitureDrag.oy + dy;
-        item.x = Math.min(1, Math.max(0, item.x));
-        item.y = Math.min(1, Math.max(0, item.y));
-        var el = furnitureDrag.el || furnitureElementById(furnitureDrag.id);
-        if (el) {
-          furnitureDrag.el = el;
-          el.setAttribute("transform", furnitureTransform(item));
+        var tryX = furnitureDrag.ox + dx;
+        var tryY = furnitureDrag.oy + dy;
+        item.x = tryX;
+        item.y = tryY;
+        if (
+          constrainFurnitureMove(
+            item,
+            data.rooms,
+            furnitureDrag.lastValidX,
+            furnitureDrag.lastValidY
+          )
+        ) {
+          furnitureDrag.lastValidX = item.x;
+          furnitureDrag.lastValidY = item.y;
         }
+        render();
       }
       return;
     }
@@ -1142,19 +847,7 @@ export function initFloorPlanViewer() {
   window.addEventListener("mouseup", function () {
     if (vertexDrag) {
       vertexDrag = null;
-      syncRoomMeasureReadout();
-      return;
-    }
-    if (furnitureDrag) {
-      var item = data.furniture.find(function (f) {
-        return f.id === furnitureDrag.id;
-      });
-      var el = furnitureDrag.el || furnitureElementById(furnitureDrag.id);
-      if (item && el) {
-        el.setAttribute("transform", furnitureTransform(item));
-        animateFurnitureDragEnd(el);
-        render();
-      }
+      geo.clearVertexDrag();
     }
     drag = null;
     furnitureDrag = null;
@@ -1164,51 +857,33 @@ export function initFloorPlanViewer() {
     var tag = e.target && e.target.tagName;
     if (tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA") return;
     if (e.key === "Escape") {
-      stopCameraTween();
+      var geoHandled = geo.handleEscape();
+      if (geoHandled) {
+        render();
+        e.preventDefault();
+        return;
+      }
       selectedFurnitureId = null;
-      toolMode = "view";
-      vertexDrag = null;
-      scaleDraft = null;
-      measureDraft = null;
-      drawRoomPoints = null;
-      drawRoomCursor = null;
-      selectedVertex = null;
       syncReplaceSelect();
-      syncToolUi();
+      updateFurnitureSelectionUi();
+      hideTooltip(tip);
       render();
       e.preventDefault();
       return;
     }
-    if (toolMode === "setScale" && e.key === "Enter") {
-      applyScaleFromInput();
+    if (geo.handleKeydown(e)) {
       e.preventDefault();
       return;
     }
-    if (toolMode === "drawRoom" && e.key === "Enter") {
-      finishDrawRoom();
-      e.preventDefault();
-      return;
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
-      performUndo();
-      e.preventDefault();
-      return;
-    }
-    if (
-      (e.key === "Delete" || e.key === "Backspace") &&
-      toolMode === "vertexEdit" &&
-      selectedVertex
-    ) {
-      deleteSelectedVertex();
-      e.preventDefault();
-      return;
-    }
+    if (geo.blocksFurnitureInteraction()) return;
     if (!selectedFurnitureId) return;
     var item = data.furniture.find(function (f) {
       return f.id === selectedFurnitureId;
     });
     if (!item) return;
     var step = e.shiftKey ? 0.022 : 0.009;
+    var prevX = item.x;
+    var prevY = item.y;
     var changed = false;
     if (e.key === "ArrowLeft") {
       item.x -= step;
@@ -1230,20 +905,17 @@ export function initFloorPlanViewer() {
       changed = true;
     }
     if (changed) {
-      item.x = Math.min(1, Math.max(0, item.x));
-      item.y = Math.min(1, Math.max(0, item.y));
+      if (e.key.indexOf("Arrow") === 0) {
+        constrainFurnitureMove(item, data.rooms, prevX, prevY);
+      }
       render();
       e.preventDefault();
     }
   });
 
-  var resizeTimer = null;
   new ResizeObserver(function () {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(function () {
-      layoutOverlay();
-      render();
-    }, 150);
+    layoutOverlay();
+    render();
   }).observe(planWrap);
 
   plan.addEventListener("load", function () {
@@ -1258,9 +930,25 @@ export function initFloorPlanViewer() {
     plan.src = "/fixtures/sample-floor.svg";
   };
   plan.src = "/fixtures/reference-floor.png";
-  loadFixture();
-  syncToolUi();
-  syncFloorSelect();
-  syncRoomMeasureReadout();
-  syncUndoButton();
+
+  function boot() {
+    loadFixture();
+  }
+
+  if (hasSb) {
+    fetchShearlingCatalog()
+      .then(function (catalog) {
+        shearlingCatalog = catalog;
+        data.furniture_catalog = catalog;
+        setLlmStatus("Catalog: " + catalog.length + " Shearling SKUs loaded");
+        boot();
+      })
+      .catch(function (err) {
+        var msg = err && err.message ? err.message : String(err);
+        setLlmStatus("Catalog error: " + msg);
+        boot();
+      });
+  } else {
+    boot();
+  }
 }

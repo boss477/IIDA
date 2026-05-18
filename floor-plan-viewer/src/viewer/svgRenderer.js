@@ -1,1168 +1,735 @@
-// svgRenderer.js — Premium Polished Floor Plan Renderer
-import { polygonBBox } from "../lib/geometry.js";
-import { layoutRoomLabel } from "../lib/labelLayout.js";
+// Premium architectural SVG renderer.
+// Renders the analyzed floor plan as vector geometry: textured floors, walls,
+// doors, furniture, labels, and hover-compatible room overlays.
+
+import { parseSofaParams } from "../lib/catalogSizing.js";
+import {
+  renderCalibrationOverlays,
+  renderDrawRoomOverlay,
+  renderMeasureOverlay,
+  renderRoomMeasurementBadge,
+  renderSelectedRoomOutline,
+  renderVertexHandles,
+} from "./geometryOverlays.js";
+import { getSofaPalette } from "../lib/sofaColors.js";
 
 const NS = "http://www.w3.org/2000/svg";
 
-function createDefs(svg) {
-  let defs = svg.querySelector("defs");
-  if (!defs) { defs = document.createElementNS(NS, "defs"); svg.appendChild(defs); }
+function svgEl(tag) {
+  return document.createElementNS(NS, tag);
+}
 
-  // Wood floor
-  const wood = document.createElementNS(NS, "pattern");
-  wood.setAttribute("id", "wood-floor");
-  wood.setAttribute("patternUnits", "userSpaceOnUse");
-  wood.setAttribute("width", "40"); wood.setAttribute("height", "14");
-  const wb = document.createElementNS(NS, "rect");
-  wb.setAttribute("width", "40"); wb.setAttribute("height", "14"); wb.setAttribute("fill", "#f3e8d8");
-  wood.appendChild(wb);
-  for (let i = 1; i < 5; i++) {
-    const line = document.createElementNS(NS, "line");
-    line.setAttribute("x1", i * 10); line.setAttribute("y1", "0");
-    line.setAttribute("x2", i * 10); line.setAttribute("y2", "14");
-    line.setAttribute("stroke", "#e5d4c0"); line.setAttribute("stroke-width", "0.6");
-    wood.appendChild(line);
+function setAttrs(el, attrs) {
+  Object.keys(attrs).forEach(function (key) {
+    var value = attrs[key];
+    if (value !== undefined && value !== null) el.setAttribute(key, String(value));
+  });
+  return el;
+}
+
+function createDefs(svg) {
+  var defs = svg.querySelector("defs");
+  if (!defs) {
+    defs = svgEl("defs");
+    svg.appendChild(defs);
+  }
+
+  var wood = setAttrs(svgEl("pattern"), {
+    id: "wood-floor",
+    patternUnits: "userSpaceOnUse",
+    width: 60,
+    height: 18,
+  });
+  wood.appendChild(setAttrs(svgEl("rect"), { width: 60, height: 18, fill: "#f0e6d8" }));
+  for (var i = 1; i < 6; i++) {
+    wood.appendChild(
+      setAttrs(svgEl("line"), {
+        x1: i * 10,
+        y1: 0,
+        x2: i * 10,
+        y2: 18,
+        stroke: "#e0d0c0",
+        "stroke-width": 0.8,
+      })
+    );
+  }
+  wood.appendChild(setAttrs(svgEl("line"), { x1: 0, y1: 0, x2: 60, y2: 0, stroke: "#e0d0c0", "stroke-width": 0.8 }));
+  wood.appendChild(setAttrs(svgEl("line"), { x1: 0, y1: 18, x2: 60, y2: 18, stroke: "#e0d0c0", "stroke-width": 0.8 }));
+  for (var g = 0; g < 4; g++) {
+    wood.appendChild(
+      setAttrs(svgEl("path"), {
+        d: "M " + (5 + g * 15) + " 2 Q " + (8 + g * 15) + " 9 " + (5 + g * 15) + " 16",
+        stroke: "#e8d8c8",
+        "stroke-width": 0.5,
+        fill: "none",
+      })
+    );
   }
   defs.appendChild(wood);
 
-  // Bathroom small tile
-  const tile = document.createElementNS(NS, "pattern");
-  tile.setAttribute("id", "tile-floor");
-  tile.setAttribute("patternUnits", "userSpaceOnUse");
-  tile.setAttribute("width", "12"); tile.setAttribute("height", "12");
-  const tb = document.createElementNS(NS, "rect");
-  tb.setAttribute("width", "12"); tb.setAttribute("height", "12"); tb.setAttribute("fill", "#f5f5f5");
-  tile.appendChild(tb);
-  const tg = document.createElementNS(NS, "path");
-  tg.setAttribute("d", "M0 0 L0 12 M0 0 L12 0");
-  tg.setAttribute("stroke", "#d8d8d8"); tg.setAttribute("stroke-width", "0.8");
-  tile.appendChild(tg);
+  var tile = setAttrs(svgEl("pattern"), {
+    id: "tile-floor",
+    patternUnits: "userSpaceOnUse",
+    width: 24,
+    height: 24,
+  });
+  tile.appendChild(setAttrs(svgEl("rect"), { width: 24, height: 24, fill: "#f5f8fa" }));
+  tile.appendChild(setAttrs(svgEl("path"), { d: "M0 0 L0 24 M0 0 L24 0", stroke: "#c8d8e4", "stroke-width": 1 }));
+  tile.appendChild(setAttrs(svgEl("rect"), { x: 1, y: 1, width: 22, height: 22, fill: "none", stroke: "#ffffff", "stroke-width": 0.5, opacity: 0.5 }));
   defs.appendChild(tile);
 
-  // Balcony grid tile
-  const balconyTile = document.createElementNS(NS, "pattern");
-  balconyTile.setAttribute("id", "balcony-floor");
-  balconyTile.setAttribute("patternUnits", "userSpaceOnUse");
-  balconyTile.setAttribute("width", "10"); balconyTile.setAttribute("height", "10");
-  const bb = document.createElementNS(NS, "rect");
-  bb.setAttribute("width", "10"); bb.setAttribute("height", "10"); bb.setAttribute("fill", "#fafafa");
-  balconyTile.appendChild(bb);
-  const bg = document.createElementNS(NS, "path");
-  bg.setAttribute("d", "M0 0 L0 10 M0 0 L10 0");
-  bg.setAttribute("stroke", "#e0e0e0"); bg.setAttribute("stroke-width", "0.8");
-  balconyTile.appendChild(bg);
-  defs.appendChild(balconyTile);
+  var kitchen = setAttrs(svgEl("pattern"), {
+    id: "kitchen-floor",
+    patternUnits: "userSpaceOnUse",
+    width: 32,
+    height: 32,
+  });
+  kitchen.appendChild(setAttrs(svgEl("rect"), { width: 32, height: 32, fill: "#fef8e0" }));
+  kitchen.appendChild(setAttrs(svgEl("path"), { d: "M0 0 L0 32 M0 0 L32 0", stroke: "#f0e0b0", "stroke-width": 1 }));
+  kitchen.appendChild(setAttrs(svgEl("rect"), { x: 1, y: 1, width: 30, height: 30, fill: "none", stroke: "#ffffff", "stroke-width": 0.5, opacity: 0.4 }));
+  defs.appendChild(kitchen);
 
-  // Kitchen warm tile
-  const kit = document.createElementNS(NS, "pattern");
-  kit.setAttribute("id", "kitchen-floor");
-  kit.setAttribute("patternUnits", "userSpaceOnUse");
-  kit.setAttribute("width", "30"); kit.setAttribute("height", "30");
-  const kb = document.createElementNS(NS, "rect");
-  kb.setAttribute("width", "30"); kb.setAttribute("height", "30"); kb.setAttribute("fill", "#fff8e1");
-  kit.appendChild(kb);
-  const kg = document.createElementNS(NS, "path");
-  kg.setAttribute("d", "M0 0 L0 30 M0 0 L30 0");
-  kg.setAttribute("stroke", "#f0e0c0"); kg.setAttribute("stroke-width", "0.8");
-  kit.appendChild(kg);
-  defs.appendChild(kit);
+  var stone = setAttrs(svgEl("pattern"), {
+    id: "stone-floor",
+    patternUnits: "userSpaceOnUse",
+    width: 40,
+    height: 20,
+  });
+  stone.appendChild(setAttrs(svgEl("rect"), { width: 40, height: 20, fill: "#e8e8e8" }));
+  [
+    { x: 1, y: 1, width: 17, height: 8 },
+    { x: 21, y: 1, width: 18, height: 8 },
+    { x: 1, y: 11, width: 18, height: 8 },
+    { x: 21, y: 11, width: 17, height: 8 },
+  ].forEach(function (r) {
+    stone.appendChild(
+      setAttrs(svgEl("rect"), {
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+        fill: "#f2f2f2",
+        stroke: "#d0d0d0",
+        "stroke-width": 0.8,
+      })
+    );
+  });
+  defs.appendChild(stone);
 
-  // Carpet for rugs
-  const carpet = document.createElementNS(NS, "pattern");
-  carpet.setAttribute("id", "carpet");
-  carpet.setAttribute("patternUnits", "userSpaceOnUse");
-  carpet.setAttribute("width", "10"); carpet.setAttribute("height", "10");
-  const cb = document.createElementNS(NS, "rect");
-  cb.setAttribute("width", "10"); cb.setAttribute("height", "10"); cb.setAttribute("fill", "#f0e8dc");
-  carpet.appendChild(cb);
-  const cw1 = document.createElementNS(NS, "line");
-  cw1.setAttribute("x1", "5"); cw1.setAttribute("y1", "0");
-  cw1.setAttribute("x2", "5"); cw1.setAttribute("y2", "10");
-  cw1.setAttribute("stroke", "#e5ddd0"); cw1.setAttribute("stroke-width", "0.5");
-  carpet.appendChild(cw1);
-  const cw2 = document.createElementNS(NS, "line");
-  cw2.setAttribute("x1", "0"); cw2.setAttribute("y1", "5");
-  cw2.setAttribute("x2", "10"); cw2.setAttribute("y2", "5");
-  cw2.setAttribute("stroke", "#e5ddd0"); cw2.setAttribute("stroke-width", "0.5");
-  carpet.appendChild(cw2);
+  var carpet = setAttrs(svgEl("pattern"), {
+    id: "carpet",
+    patternUnits: "userSpaceOnUse",
+    width: 12,
+    height: 12,
+  });
+  carpet.appendChild(setAttrs(svgEl("rect"), { width: 12, height: 12, fill: "#f5f0e8" }));
+  carpet.appendChild(setAttrs(svgEl("circle"), { cx: 3, cy: 3, r: 0.8, fill: "#e0d8cc" }));
+  carpet.appendChild(setAttrs(svgEl("circle"), { cx: 9, cy: 9, r: 0.8, fill: "#e0d8cc" }));
   defs.appendChild(carpet);
-
-  // Wall shadow
-  const wallFilter = document.createElementNS(NS, "filter");
-  wallFilter.setAttribute("id", "soft-wall-shadow");
-  wallFilter.setAttribute("x", "-10%"); wallFilter.setAttribute("y", "-10%");
-  wallFilter.setAttribute("width", "120%"); wallFilter.setAttribute("height", "120%");
-  const fe1 = document.createElementNS(NS, "feDropShadow");
-  fe1.setAttribute("dx", "1.4"); fe1.setAttribute("dy", "2");
-  fe1.setAttribute("stdDeviation", "1.8");
-  fe1.setAttribute("flood-color", "#000000");
-  fe1.setAttribute("flood-opacity", "0.18");
-  wallFilter.appendChild(fe1);
-  defs.appendChild(wallFilter);
-
-  // Soft furniture shadow
-  const furnFilter = document.createElementNS(NS, "filter");
-  furnFilter.setAttribute("id", "soft-furniture-shadow");
-  furnFilter.setAttribute("x", "-15%"); furnFilter.setAttribute("y", "-15%");
-  furnFilter.setAttribute("width", "130%"); furnFilter.setAttribute("height", "130%");
-  const fe2 = document.createElementNS(NS, "feDropShadow");
-  fe2.setAttribute("dx", "1.5"); fe2.setAttribute("dy", "2.5");
-  fe2.setAttribute("stdDeviation", "2");
-  fe2.setAttribute("flood-color", "#000000");
-  fe2.setAttribute("flood-opacity", "0.12");
-  furnFilter.appendChild(fe2);
-  defs.appendChild(furnFilter);
-
-  // Label background filter
-  const labelFilter = document.createElementNS(NS, "filter");
-  labelFilter.setAttribute("id", "label-glow");
-  const fe3 = document.createElementNS(NS, "feGaussianBlur");
-  fe3.setAttribute("stdDeviation", "2");
-  fe3.setAttribute("result", "blur");
-  labelFilter.appendChild(fe3);
-  const fe4 = document.createElementNS(NS, "feFlood");
-  fe4.setAttribute("flood-color", "#ffffff");
-  fe4.setAttribute("flood-opacity", "0.85");
-  fe4.setAttribute("result", "flood");
-  labelFilter.appendChild(fe4);
-  const fe5 = document.createElementNS(NS, "feComposite");
-  fe5.setAttribute("in", "flood"); fe5.setAttribute("in2", "blur");
-  fe5.setAttribute("operator", "in"); fe5.setAttribute("result", "mask");
-  labelFilter.appendChild(fe5);
-  const fe6 = document.createElementNS(NS, "feMerge");
-  const m1 = document.createElementNS(NS, "feMergeNode"); m1.setAttribute("in", "mask");
-  const m2 = document.createElementNS(NS, "feMergeNode"); m2.setAttribute("in", "SourceGraphic");
-  fe6.appendChild(m1); fe6.appendChild(m2);
-  labelFilter.appendChild(fe6);
-  defs.appendChild(labelFilter);
-
-  return defs;
 }
 
 function patternForRoom(room) {
-  const name = String(room.type || room.name || "").toLowerCase();
-  const flooring = String(room.flooring || "").toLowerCase();
-  if (flooring) {
-    if (flooring.includes("wood")) return "url(#wood-floor)";
-    if (flooring.includes("tile")) return "url(#tile-floor)";
-    if (flooring.includes("stone") || flooring.includes("balcony") || flooring.includes("grid"))
-      return "url(#balcony-floor)";
-    if (flooring.includes("kitchen") || flooring.includes("warm") || flooring.includes("plain"))
-      return "url(#kitchen-floor)";
-    return "url(#wood-floor)";
-  }
-  if (name.includes("kitchen")) return "url(#kitchen-floor)";
-  if (name.includes("bath")) return "url(#tile-floor)";
-  if (name.includes("bed")) return "url(#wood-floor)";
-  if (name.includes("living")) return "url(#wood-floor)";
-  if (name.includes("dining")) return "url(#wood-floor)";
-  if (name.includes("balcon") || name.includes("patio")) return "url(#balcony-floor)";
-  if (name.includes("passage") || name.includes("hall") || name.includes("utility")) return "url(#wood-floor)";
-  if (name.includes("closet") || name.includes("laundry")) return "url(#kitchen-floor)";
-  return "url(#wood-floor)";
+  var flooring = String(room.flooring || "").toLowerCase();
+  var name = String(room.type || room.name || "").toLowerCase();
+  if (flooring === "wood" || name.indexOf("bed") >= 0 || name.indexOf("living") >= 0 || name.indexOf("dining") >= 0 || name.indexOf("hall") >= 0) return "url(#wood-floor)";
+  if (flooring === "tile" || name.indexOf("bath") >= 0) return "url(#tile-floor)";
+  if (name.indexOf("kitchen") >= 0) return "url(#kitchen-floor)";
+  if (flooring === "stone" || name.indexOf("balcon") >= 0 || name.indexOf("patio") >= 0 || name.indexOf("outdoor") >= 0 || name.indexOf("terrace") >= 0) return "url(#stone-floor)";
+  return "#fafafa";
 }
 
 function baseColorForRoom(room) {
-  const name = String(room.type || room.name || "").toLowerCase();
-  const flooring = String(room.flooring || "").toLowerCase();
-  if (flooring) {
-    if (flooring.includes("wood")) return "#e0d4c8";
-    if (flooring.includes("tile")) return "#90caf9";
-    if (flooring.includes("stone") || flooring.includes("balcony")) return "#cfd8dc";
-    if (flooring.includes("kitchen") || flooring.includes("plain")) return "#fff9c4";
-  }
-  if (name.includes("kitchen")) return "#ffe082";
-  if (name.includes("bath")) return "#90caf9";
-  if (name.includes("bed")) return "#bcaaa4";
-  if (name.includes("living")) return "#a1887f";
-  if (name.includes("dining")) return "#b39ddb";
-  if (name.includes("balcon") || name.includes("patio")) return "#cfd8dc";
-  if (name.includes("passage") || name.includes("hall") || name.includes("utility")) return "#d7ccc8";
-  if (name.includes("closet") || name.includes("laundry")) return "#fff9c4";
-  return "#e0d4c8";
+  var flooring = String(room.flooring || "").toLowerCase();
+  var name = String(room.type || room.name || "").toLowerCase();
+  if (room.color) return room.color;
+  if (name.indexOf("kitchen") >= 0) return "#fef8e0";
+  if (name.indexOf("bath") >= 0 || flooring === "tile") return "#eaf4f8";
+  if (name.indexOf("bed") >= 0) return "#fdfcf8";
+  if (name.indexOf("living") >= 0 || name.indexOf("dining") >= 0) return "#faf5f0";
+  if (name.indexOf("balcon") >= 0 || name.indexOf("patio") >= 0 || flooring === "stone") return "#f0f0f0";
+  return "#fafafa";
 }
 
 function pointsAttr(points, imageWidth, imageHeight) {
   return (points || [])
-    .map(function (p) { return (p.x * imageWidth) + "," + (p.y * imageHeight); })
+    .map(function (p) {
+      return p.x * imageWidth + "," + p.y * imageHeight;
+    })
     .join(" ");
 }
 
 function polygonCentroid(points) {
   if (!points || !points.length) return { x: 0.5, y: 0.5 };
-  let area = 0, cx = 0, cy = 0;
-  for (let i = 0; i < points.length; i++) {
-    const a = points[i]; const b = points[(i + 1) % points.length];
-    const cross = a.x * b.y - b.x * a.y;
-    area += cross; cx += (a.x + b.x) * cross; cy += (a.y + b.y) * cross;
+  var area = 0;
+  var cx = 0;
+  var cy = 0;
+  for (var i = 0; i < points.length; i++) {
+    var a = points[i];
+    var b = points[(i + 1) % points.length];
+    var cross = a.x * b.y - b.x * a.y;
+    area += cross;
+    cx += (a.x + b.x) * cross;
+    cy += (a.y + b.y) * cross;
   }
   if (Math.abs(area) < 0.000001) {
-    let sx = 0, sy = 0;
-    points.forEach(function (p) { sx += p.x; sy += p.y; });
+    var sx = 0;
+    var sy = 0;
+    points.forEach(function (p) {
+      sx += p.x;
+      sy += p.y;
+    });
     return { x: sx / points.length, y: sy / points.length };
   }
   area *= 0.5;
   return { x: cx / (6 * area), y: cy / (6 * area) };
 }
 
+function wallSourceFromRooms(rooms) {
+  return (rooms || [])
+    .filter(function (r) {
+      return r.polygon && r.polygon.length >= 3;
+    })
+    .map(function (r) {
+      return {
+        id: "wall-from-" + (r.id || r.name || Math.random()),
+        points: r.polygon.concat([r.polygon[0]]),
+        thickness: 0.006,
+      };
+    });
+}
+
+function catalogById(catalog, id) {
+  if (!catalog || !id) return null;
+  for (var i = 0; i < catalog.length; i++) {
+    if (String(catalog[i].id) === String(id)) return catalog[i];
+  }
+  return null;
+}
+
 function renderBackground(svg, size) {
-  const rect = document.createElementNS(NS, "rect");
-  rect.setAttribute("x", "0"); rect.setAttribute("y", "0");
-  rect.setAttribute("width", String(size.width));
-  rect.setAttribute("height", String(size.height));
-  rect.setAttribute("fill", "transparent");
-  svg.appendChild(rect);
+  svg.appendChild(setAttrs(svgEl("rect"), { class: "plan-bg", x: 0, y: 0, width: size.width, height: size.height, fill: "#ffffff" }));
 }
 
 function renderTexturedFills(svg, rooms, activeRoomId, size) {
   (rooms || []).forEach(function (room) {
     if (!room.polygon || room.polygon.length < 3) return;
-    const pts = pointsAttr(room.polygon, size.width, size.height);
-    const isActive = activeRoomId && (room.id === activeRoomId || room.name === activeRoomId);
-    const roomId = room.id || room.name || "";
+    var pts = pointsAttr(room.polygon, size.width, size.height);
 
-    const base = document.createElementNS(NS, "polygon");
-    base.setAttribute("class", "plan-room-fill");
-    base.setAttribute("data-room-fill", roomId);
-    base.setAttribute("data-active", isActive ? "1" : "0");
-    base.setAttribute("points", pts);
-    base.setAttribute("fill", baseColorForRoom(room));
-    base.setAttribute("stroke", "none");
-    if (isActive) { base.setAttribute("fill", "#fffde7"); base.setAttribute("fill-opacity", "0.85"); }
-    svg.appendChild(base);
-
-    const poly = document.createElementNS(NS, "polygon");
-    poly.setAttribute("points", pts);
-    poly.setAttribute("fill", patternForRoom(room));
-    poly.setAttribute("stroke", "none");
-    if (isActive) { poly.setAttribute("fill-opacity", "0.6"); }
-    svg.appendChild(poly);
-
-    const hover = document.createElementNS(NS, "polygon");
-    hover.setAttribute("class", "hi");
-    hover.setAttribute("data-room", roomId);
-    hover.setAttribute("points", pts);
-    hover.setAttribute("opacity", isActive ? "1" : "0");
-    svg.appendChild(hover);
-
-    if (isActive) {
-      const hl = document.createElementNS(NS, "polygon");
-      hl.setAttribute("points", pts);
-      hl.setAttribute("fill", "none");
-      hl.setAttribute("stroke", "#ffc107");
-      hl.setAttribute("stroke-width", "2.5");
-      hl.setAttribute("opacity", "0.9");
-      svg.appendChild(hl);
-    }
+    svg.appendChild(setAttrs(svgEl("polygon"), { points: pts, fill: baseColorForRoom(room), stroke: "none" }));
+    svg.appendChild(
+      setAttrs(svgEl("polygon"), {
+        class: "plan-room-fill",
+        "data-room-fill": room.id || room.name || "",
+        "data-active": activeRoomId === room.id || activeRoomId === room.name ? "1" : "0",
+        points: pts,
+        fill: patternForRoom(room),
+        stroke: "rgba(30, 27, 24, 0.18)",
+        "stroke-width": 1,
+      })
+    );
   });
 }
 
 function renderRugs(svg, rooms, size) {
-  let defs = svg.querySelector("defs");
-  if (!defs) return;
-
-  (rooms || []).forEach(function (room, idx) {
-    const name = String(room.type || room.name || "").toLowerCase();
-    if (!name.includes("living") && !name.includes("bed")) return;
+  (rooms || []).forEach(function (room) {
+    var name = String(room.type || room.name || "").toLowerCase();
+    if (name.indexOf("living") < 0 && name.indexOf("bed") < 0) return;
     if (!room.polygon || room.polygon.length < 3) return;
 
-    const pts = pointsAttr(room.polygon, size.width, size.height);
-    const clipId = "rug-clip-" + String(room.id || room.name || idx).replace(/\s+/g, "-");
-    const clip = document.createElementNS(NS, "clipPath");
-    clip.setAttribute("id", clipId);
-    const clipPoly = document.createElementNS(NS, "polygon");
-    clipPoly.setAttribute("points", pts);
-    clip.appendChild(clipPoly);
-    defs.appendChild(clip);
+    var minX = 1;
+    var minY = 1;
+    var maxX = 0;
+    var maxY = 0;
+    room.polygon.forEach(function (p) {
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+    });
 
-    const bbox = polygonBBox(room.polygon);
-    const pad = 0.02;
-    const rx = (bbox.minX - pad) * size.width;
-    const ry = (bbox.minY - pad) * size.height;
-    const rw = (bbox.maxX - bbox.minX + pad * 2) * size.width;
-    const rh = (bbox.maxY - bbox.minY + pad * 2) * size.height;
+    var pad = 0.06;
+    var rw = (maxX - minX - pad * 2) * size.width;
+    var rh = (maxY - minY - pad * 2) * size.height;
     if (rw <= 0 || rh <= 0) return;
 
-    const rug = document.createElementNS(NS, "rect");
-    rug.setAttribute("x", String(rx));
-    rug.setAttribute("y", String(ry));
-    rug.setAttribute("width", String(rw));
-    rug.setAttribute("height", String(rh));
-    rug.setAttribute("fill", "url(#carpet)");
-    rug.setAttribute("stroke", "#e0d8cc");
-    rug.setAttribute("stroke-width", "0.8");
-    rug.setAttribute("rx", "4");
-    rug.setAttribute("clip-path", "url(#" + clipId + ")");
-    svg.appendChild(rug);
+    svg.appendChild(
+      setAttrs(svgEl("rect"), {
+        x: (minX + pad) * size.width,
+        y: (minY + pad) * size.height,
+        width: rw,
+        height: rh,
+        fill: "url(#carpet)",
+        stroke: "#e0d8cc",
+        "stroke-width": 1,
+        rx: 6,
+        opacity: 0.78,
+      })
+    );
   });
 }
 
 function renderWindows(svg, windows, size) {
   (windows || []).forEach(function (win) {
     if (!win.position || win.width == null) return;
-    const wx = win.position.x * size.width;
-    const wy = win.position.y * size.height;
-    const ww = Math.max(14, win.width * size.width);
-    const wh = Math.max(10, (win.height || 0.014) * Math.min(size.width, size.height));
+    var wx = win.position.x * size.width;
+    var wy = win.position.y * size.height;
+    var ww = win.width * size.width;
+    var wh = (win.height || 0.008) * Math.min(size.width, size.height);
 
-    const rect = document.createElementNS(NS, "rect");
-    rect.setAttribute("class", "plan-window");
-    rect.setAttribute("x", String(wx - ww / 2));
-    rect.setAttribute("y", String(wy - wh / 2));
-    rect.setAttribute("width", String(ww));
-    rect.setAttribute("height", String(wh));
-    rect.setAttribute("fill", "#4fc3f7");
-    rect.setAttribute("stroke", "#0d47a1");
-    rect.setAttribute("stroke-width", "2.5");
-    rect.setAttribute("opacity", "0.95");
-    svg.appendChild(rect);
+    svg.appendChild(
+      setAttrs(svgEl("rect"), {
+        class: "window-mark",
+        x: wx - ww / 2,
+        y: wy - wh / 2,
+        width: ww,
+        height: wh,
+        fill: "#c8e0f0",
+        stroke: "#ffffff",
+        "stroke-width": 2,
+        opacity: 0.85,
+      })
+    );
 
-    const cols = Math.max(2, Math.floor(ww / 18));
-    const rows = Math.max(2, Math.floor(wh / 18));
-    const colW = ww / cols;
-    const rowH = wh / rows;
+    svg.appendChild(
+      setAttrs(svgEl("line"), {
+        class: "window-mullion",
+        x1: wx - ww / 2,
+        y1: wy,
+        x2: wx + ww / 2,
+        y2: wy,
+        stroke: "#ffffff",
+        "stroke-width": 1.5,
+      })
+    );
 
-    for (let i = 1; i < cols; i++) {
-      const line = document.createElementNS(NS, "line");
-      line.setAttribute("class", "plan-window");
-      line.setAttribute("x1", String(wx - ww / 2 + i * colW));
-      line.setAttribute("y1", String(wy - wh / 2));
-      line.setAttribute("x2", String(wx - ww / 2 + i * colW));
-      line.setAttribute("y2", String(wy + wh / 2));
-      line.setAttribute("stroke", "#0d47a1");
-      line.setAttribute("stroke-width", "1.5");
-      svg.appendChild(line);
-    }
-    for (let j = 1; j < rows; j++) {
-      const line = document.createElementNS(NS, "line");
-      line.setAttribute("class", "plan-window");
-      line.setAttribute("x1", String(wx - ww / 2));
-      line.setAttribute("y1", String(wy - wh / 2 + j * rowH));
-      line.setAttribute("x2", String(wx + ww / 2));
-      line.setAttribute("y2", String(wy - wh / 2 + j * rowH));
-      line.setAttribute("stroke", "#0d47a1");
-      line.setAttribute("stroke-width", "1.5");
-      svg.appendChild(line);
+    if (ww > 40) {
+      [0.33, 0.67].forEach(function (frac) {
+        var mx = wx - ww / 2 + ww * frac;
+        svg.appendChild(
+          setAttrs(svgEl("line"), {
+            class: "window-mullion",
+            x1: mx,
+            y1: wy - wh / 2,
+            x2: mx,
+            y2: wy + wh / 2,
+            stroke: "#ffffff",
+            "stroke-width": 1.5,
+          })
+        );
+      });
+    } else if (ww > 20) {
+      svg.appendChild(
+        setAttrs(svgEl("line"), {
+          class: "window-mullion",
+          x1: wx,
+          y1: wy - wh / 2,
+          x2: wx,
+          y2: wy + wh / 2,
+          stroke: "#ffffff",
+          "stroke-width": 1.5,
+        })
+      );
     }
   });
 }
 
-function renderDoorArcs(svg, doors, size) {
-  (doors || []).forEach(function (door) {
-    if (!door.position) return;
-    const x = door.position.x * size.width;
-    const y = door.position.y * size.height;
-    const radius = (door.width || 0.035) * Math.min(size.width, size.height);
-    const swing = door.swing || "right";
+function renderDoorPolygon(svg, door, idx, size) {
+  if (!door.polygon || door.polygon.length < 3) return false;
+  var unit = Math.min(size.width, size.height);
+  var g = setAttrs(svgEl("g"), { "data-door": door.id || "door-" + idx, class: "door-mark" });
+  g.appendChild(
+    setAttrs(svgEl("polygon"), {
+      points: pointsAttr(door.polygon, size.width, size.height),
+      fill: "rgba(61,40,23,0.12)",
+      stroke: "#3d2817",
+      "stroke-width": Math.max(1, unit * 0.0014),
+      "stroke-linejoin": "miter",
+    })
+  );
+  svg.appendChild(g);
+  return true;
+}
 
-    let d = "";
-    if (swing === "left" || swing === 1) {
-      d = `M ${x} ${y} L ${x - radius} ${y} A ${radius} ${radius} 0 0 1 ${x} ${y + radius}`;
-    } else if (swing === "up" || swing === 2) {
-      d = `M ${x} ${y} L ${x} ${y - radius} A ${radius} ${radius} 0 0 1 ${x - radius} ${y}`;
-    } else if (swing === "down" || swing === 3) {
-      d = `M ${x} ${y} L ${x} ${y + radius} A ${radius} ${radius} 0 0 1 ${x + radius} ${y}`;
-    } else {
-      d = `M ${x} ${y} L ${x + radius} ${y} A ${radius} ${radius} 0 0 1 ${x} ${y + radius}`;
+function renderDoorArcs(svg, doors, size) {
+  (doors || []).forEach(function (door, idx) {
+    if (!door.position && door.x == null) {
+      renderDoorPolygon(svg, door, idx, size);
+      return;
     }
 
-    const path = document.createElementNS(NS, "path");
-    path.setAttribute("d", d);
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", "#a0a0a0");
-    path.setAttribute("stroke-width", "1");
-    path.setAttribute("stroke-dasharray", "2.5,1.5");
-    svg.appendChild(path);
+    var unit = Math.min(size.width, size.height);
+    var x = (door.position ? door.position.x : door.x) * size.width;
+    var y = (door.position ? door.position.y : door.y) * size.height;
+    var radius = (door.width || door.radius || 0.035) * unit;
+    var swing = door.swing || "right";
+    var d = "";
 
-    let angle = Math.PI / 4;
+    if (swing === "left" || swing === 1) {
+      d = "M " + x + " " + y + " L " + (x - radius) + " " + y + " A " + radius + " " + radius + " 0 0 1 " + x + " " + (y + radius);
+    } else if (swing === "up" || swing === 2) {
+      d = "M " + x + " " + y + " L " + x + " " + (y - radius) + " A " + radius + " " + radius + " 0 0 1 " + (x - radius) + " " + y;
+    } else if (swing === "down" || swing === 3) {
+      d = "M " + x + " " + y + " L " + x + " " + (y + radius) + " A " + radius + " " + radius + " 0 0 1 " + (x + radius) + " " + y;
+    } else {
+      d = "M " + x + " " + y + " L " + (x + radius) + " " + y + " A " + radius + " " + radius + " 0 0 1 " + x + " " + (y + radius);
+    }
+
+    var g = setAttrs(svgEl("g"), { "data-door": door.id || "door-" + idx, class: "door-mark" });
+    g.appendChild(setAttrs(svgEl("path"), { d: d, fill: "none", stroke: "#999999", "stroke-width": 1.2, "stroke-dasharray": "3,2" }));
+
+    var angle = Math.PI / 4;
     if (swing === "left" || swing === 1) angle = Math.PI - Math.PI / 4;
     else if (swing === "up" || swing === 2) angle = -Math.PI / 4;
     else if (swing === "down" || swing === 3) angle = Math.PI / 4 + Math.PI / 2;
 
-    const px = x + Math.cos(angle) * radius * 0.92;
-    const py = y + Math.sin(angle) * radius * 0.92;
-    const panel = document.createElementNS(NS, "line");
-    panel.setAttribute("x1", String(x)); panel.setAttribute("y1", String(y));
-    panel.setAttribute("x2", String(px)); panel.setAttribute("y2", String(py));
-    panel.setAttribute("stroke", "#888888");
-    panel.setAttribute("stroke-width", "1.2");
-    svg.appendChild(panel);
-  });
-}
-
-function wallSegmentToPolygon(ax, ay, bx, by, halfW) {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const len = Math.sqrt(dx * dx + dy * dy) || 1;
-  const nx = -dy / len * halfW;
-  const ny = dx / len * halfW;
-  return [
-    (ax + nx) + "," + (ay + ny),
-    (bx + nx) + "," + (by + ny),
-    (bx - nx) + "," + (by - ny),
-    (ax - nx) + "," + (ay - ny),
-  ].join(" ");
-}
-
-function renderWalls(svg, walls, size) {
-  if (!walls || !walls.length) return;
-  const unit = Math.min(size.width, size.height);
-
-  walls.forEach(function (wall, idx) {
-    if (!wall.points || wall.points.length < 2) return;
-    const role = wall.role || "partition";
-    const minHalfPx = role === "exterior" ? 5 : 3;
-    const halfW = Math.max(minHalfPx, (wall.thickness || 0.009) * unit / 2);
-    const pts = wall.points;
-
-    for (let i = 0; i < pts.length - 1; i++) {
-      const ax = pts[i].x * size.width;
-      const ay = pts[i].y * size.height;
-      const bx = pts[i + 1].x * size.width;
-      const by = pts[i + 1].y * size.height;
-      const seg = document.createElementNS(NS, "polygon");
-      seg.setAttribute("class", "plan-wall");
-      seg.setAttribute("data-wall", (wall.id || "wall-" + idx) + "-" + i);
-      seg.setAttribute("points", wallSegmentToPolygon(ax, ay, bx, by, halfW));
-      seg.setAttribute("fill", "#111111");
-      seg.setAttribute("stroke", "none");
-      svg.appendChild(seg);
-    }
-
-    if (pts.length >= 3) {
-      const first = pts[0];
-      const last = pts[pts.length - 1];
-      if (Math.abs(first.x - last.x) < 0.0001 && Math.abs(first.y - last.y) < 0.0001) return;
-    }
-  });
-}
-
-function renderDetailedFurniture(svg, furniture, catalog, selectedId, size) {
-  (furniture || []).forEach(function (item) {
-    const cx = (item.x || 0) * size.width;
-    const cy = (item.y || 0) * size.height;
-    const w = (item.width || 0.05) * size.width;
-    const h = (item.height || 0.05) * size.height;
-    const rotation = item.rotationDeg || item.rotation || 0;
-    const type = String(item.type || item.catalogId || "").toLowerCase();
-    const imgUrl = item.imageUrl || item.svgUrl || null;
-
-    const g = document.createElementNS(NS, "g");
-    g.setAttribute("data-furniture-id", item.id || "");
-    g.setAttribute("class", "furniture-g" + (selectedId && item.id === selectedId ? " furniture-selected" : ""));
-    g.setAttribute("transform", "translate(" + cx + " " + cy + ") rotate(" + rotation + ")");
-
-    if (imgUrl) {
-      const img = document.createElementNS(NS, "image");
-      img.setAttribute("href", imgUrl);
-      img.setAttribute("x", -w / 2); img.setAttribute("y", -h / 2);
-      img.setAttribute("width", w); img.setAttribute("height", h);
-      img.setAttribute("preserveAspectRatio", "xMidYMid meet");
-      g.appendChild(img);
-    } else {
-      if (type.includes("bed")) renderBed(g, w, h);
-      else if (type.includes("sectional")) renderSectional(g, w, h);
-      else if (type.includes("sofa")) renderSofa(g, w, h);
-      else if (type.includes("dining") || type.includes("table")) renderTable(g, w, h, item.chairs || 4);
-      else if (type.includes("chair")) renderChair(g, w, h);
-      else if (type.includes("kitchen") || type.includes("island") || type.includes("counter")) renderKitchenIsland(g, w, h);
-      else if (type.includes("tub") || type.includes("bathtub")) renderBathtub(g, w, h);
-      else if (type.includes("toilet") || type.includes("wc")) renderToilet(g, w, h);
-      else if (type.includes("sink") || type.includes("basin")) renderSink(g, w, h);
-      else if (type.includes("desk") || type.includes("office")) renderDesk(g, w, h);
-      else if (type.includes("plant") || type.includes("tree")) renderPlant(g, w, h);
-      else if (type.includes("rug")) renderRugItem(g, w, h);
-      else if (type.includes("wardrobe") || type.includes("closet")) renderWardrobe(g, w, h);
-      else if (type.includes("tv") || type.includes("television")) renderTV(g, w, h);
-      else if (type.includes("stove") || type.includes("oven")) renderStove(g, w, h);
-      else if (type.includes("fridge") || type.includes("refrigerator")) renderFridge(g, w, h);
-      else {
-        const rect = document.createElementNS(NS, "rect");
-        rect.setAttribute("x", -w / 2); rect.setAttribute("y", -h / 2);
-        rect.setAttribute("width", w); rect.setAttribute("height", h);
-        rect.setAttribute("fill", "#dddddd"); rect.setAttribute("stroke", "#bbbbbb");
-        rect.setAttribute("rx", "2");
-        g.appendChild(rect);
-      }
-    }
-
-    if (selectedId && item.id === selectedId) {
-      const ring = document.createElementNS(NS, "rect");
-      ring.setAttribute("class", "furniture-select-ring");
-      ring.setAttribute("x", String(-w / 2 - 5));
-      ring.setAttribute("y", String(-h / 2 - 5));
-      ring.setAttribute("width", String(w + 10));
-      ring.setAttribute("height", String(h + 10));
-      ring.setAttribute("rx", "6");
-      ring.setAttribute("fill", "rgba(37,99,235,0.08)");
-      ring.setAttribute("stroke", "#2563eb");
-      ring.setAttribute("stroke-width", "2");
-      g.appendChild(ring);
-    }
-
-    g.setAttribute("filter", "url(#soft-furniture-shadow)");
+    g.appendChild(
+      setAttrs(svgEl("line"), {
+        x1: x,
+        y1: y,
+        x2: x + Math.cos(angle) * radius * 0.92,
+        y2: y + Math.sin(angle) * radius * 0.92,
+        stroke: "#666666",
+        "stroke-width": 1.5,
+      })
+    );
     svg.appendChild(g);
   });
 }
 
-// --- Premium Furniture Primitives ---
+function renderWalls(svg, walls, rooms, size) {
+  var source = walls && walls.length ? walls : wallSourceFromRooms(rooms);
+  var unit = Math.min(size.width, size.height);
+  source.forEach(function (wall, idx) {
+    if (!wall.points || wall.points.length < 2) return;
+    var pts = pointsAttr(wall.points, size.width, size.height);
+    var thickness = Math.max(5, (wall.thickness || 0.007) * unit);
+
+    svg.appendChild(
+      setAttrs(svgEl("polyline"), {
+        points: pts,
+        stroke: "rgba(0,0,0,0.08)",
+        "stroke-width": thickness + 3,
+        "stroke-linejoin": "round",
+        "stroke-linecap": "butt",
+        fill: "none",
+        transform: "translate(1.5 1.5)",
+      })
+    );
+    svg.appendChild(
+      setAttrs(svgEl("polyline"), {
+        class: "plan-wall",
+        "data-wall": wall.id || "wall-" + idx,
+        points: pts,
+        stroke: "#1a1a1a",
+        "stroke-width": thickness,
+        "stroke-linejoin": "round",
+        "stroke-linecap": "butt",
+        fill: "none",
+      })
+    );
+  });
+}
+
+function furnitureType(item, catalog) {
+  var row = catalogById(catalog, item.catalogId);
+  return String(item.type || item.shape || item.catalogId || (row && (row.shape || row.name)) || "").toLowerCase();
+}
+
+function furnitureRotation(item) {
+  return item.rotationDeg != null ? item.rotationDeg : item.rotation || 0;
+}
+
+function furnitureSize(item, size) {
+  var scale = item.scale != null ? item.scale : 0.06;
+  return {
+    w: (item.width || scale) * size.width,
+    h: (item.height || item.depth || scale) * size.height,
+  };
+}
+
+function renderDetailedFurniture(svg, furniture, catalog, selectedId, size) {
+  (furniture || [])
+    .slice()
+    .sort(function (a, b) {
+      return (a.zIndex || 0) - (b.zIndex || 0);
+    })
+    .forEach(function (item, idx) {
+      if (item.x == null || item.y == null) return;
+      var cx = item.x * size.width;
+      var cy = item.y * size.height;
+      var box = furnitureSize(item, size);
+      var catalogRow = catalogById(catalog || [], item.catalogId);
+      var type = furnitureType(item, catalog || []);
+      var g = setAttrs(svgEl("g"), {
+        "data-furniture-id": item.id || "f-" + idx,
+        class: "furniture-g" + (selectedId && item.id === selectedId ? " furniture-g--selected" : ""),
+        transform: "translate(" + cx + " " + cy + ") rotate(" + furnitureRotation(item) + ")",
+      });
+
+      if (type.indexOf("bed") >= 0) renderBed(g, box.w, box.h);
+      else if (type.indexOf("sofa") >= 0 || type.indexOf("lounge") >= 0 || type.indexOf("sectional") >= 0) {
+        var sofaOpts = item.sofaParams;
+        if (!sofaOpts) {
+          sofaOpts = parseSofaParams(
+            (catalogRow && catalogRow.keywords) || item.keywords,
+            (catalogRow && catalogRow.product_name) || item.product_name
+          );
+        }
+        if (type.indexOf("sectional") >= 0 && !sofaOpts.hasLounge) sofaOpts.hasLounge = true;
+        renderSofa(g, box.w, box.h, sofaOpts);
+      }
+      else if (type.indexOf("dining") >= 0 || type.indexOf("table") >= 0) renderTable(g, box.w, box.h, item.chairs || 4);
+      else if (type.indexOf("chair") >= 0) renderChair(g, box.w, box.h);
+      else if (type.indexOf("kitchen") >= 0 || type.indexOf("island") >= 0 || type.indexOf("counter") >= 0) renderKitchenIsland(g, box.w, box.h);
+      else if (type.indexOf("tub") >= 0 || type.indexOf("bathtub") >= 0) renderBathtub(g, box.w, box.h);
+      else if (type.indexOf("toilet") >= 0 || type.indexOf("wc") >= 0) renderToilet(g, box.w, box.h);
+      else if (type.indexOf("sink") >= 0 || type.indexOf("basin") >= 0) renderSink(g, box.w, box.h);
+      else if (type.indexOf("desk") >= 0 || type.indexOf("office") >= 0) renderDesk(g, box.w, box.h);
+      else if (type.indexOf("plant") >= 0 || type.indexOf("tree") >= 0) renderPlant(g, box.w, box.h);
+      else if (type.indexOf("rug") >= 0) renderRugItem(g, box.w, box.h);
+      else g.appendChild(setAttrs(svgEl("rect"), { x: -box.w / 2, y: -box.h / 2, width: box.w, height: box.h, fill: "#dddddd", stroke: "#999999", rx: 2 }));
+
+      if (selectedId && item.id === selectedId) {
+        g.appendChild(setAttrs(svgEl("rect"), { class: "furniture-select-ring", x: -box.w / 2 - 4, y: -box.h / 2 - 4, width: box.w + 8, height: box.h + 8, fill: "none", stroke: "#2563eb", "stroke-width": 2, rx: 4 }));
+      }
+
+      svg.appendChild(g);
+    });
+}
 
 function renderBed(g, w, h) {
-  const hb = document.createElementNS(NS, "rect");
-  hb.setAttribute("x", -w / 2); hb.setAttribute("y", -h / 2);
-  hb.setAttribute("width", w); hb.setAttribute("height", h * 0.15);
-  hb.setAttribute("fill", "#d4c4a8"); hb.setAttribute("rx", "3");
-  g.appendChild(hb);
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h * 0.18, fill: "#c4a882", stroke: "#a08060", rx: 3 }));
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2 + 2, y: -h / 2 + h * 0.18, width: w - 4, height: h * 0.82 - 2, fill: "#ffffff", stroke: "#e8e8e8", rx: 3 }));
+  var pw = w * 0.32;
+  var ph = h * 0.14;
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2 + 5, y: -h / 2 + h * 0.2, width: pw, height: ph, fill: "#f8f8f8", stroke: "#dddddd", rx: 4 }));
+  g.appendChild(setAttrs(svgEl("rect"), { x: w / 2 - 5 - pw, y: -h / 2 + h * 0.2, width: pw, height: ph, fill: "#f8f8f8", stroke: "#dddddd", rx: 4 }));
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2 + 2, y: h / 2 - h * 0.34, width: w - 4, height: h * 0.32, fill: "#b8d4e8", stroke: "#98c0d8", rx: 3 }));
+}
 
-  const mat = document.createElementNS(NS, "rect");
-  mat.setAttribute("x", -w / 2 + 2); mat.setAttribute("y", -h / 2 + h * 0.14);
-  mat.setAttribute("width", w - 4); mat.setAttribute("height", h * 0.72);
-  mat.setAttribute("fill", "#ffffff"); mat.setAttribute("stroke", "#f0f0f0");
-  mat.setAttribute("rx", "2");
-  g.appendChild(mat);
+/** Top-down catalog sofa — parametric seats / lounge / arms / color from keywords. */
+function renderSofa(g, w, h, opts) {
+  var seats = (opts && opts.seats) || 2;
+  var hasLounge = opts && opts.hasLounge;
+  var hasArm = !opts || opts.hasArm !== false;
+  var pal = getSofaPalette(opts && opts.color);
+  g.setAttribute("class", (g.getAttribute("class") || "") + " furniture-icon--shearling-sofa");
+  if (opts && opts.color) g.setAttribute("data-sofa-color", opts.color);
+  var bodyW = hasLounge ? w / 1.35 : w;
+  var loungeW = hasLounge ? w - bodyW : 0;
+  var backH = h * 0.25;
+  var seatH = h - backH;
+  var armW = hasArm ? w * 0.06 : 0;
+  var innerW = bodyW - armW * 2;
+  var seatCount = Math.max(1, Math.min(6, seats));
+  var cushionW = innerW / seatCount;
 
-  const pw = w * 0.30, ph = h * 0.12;
-  const p1 = document.createElementNS(NS, "rect");
-  p1.setAttribute("x", -w / 2 + 4); p1.setAttribute("y", -h / 2 + h * 0.17);
-  p1.setAttribute("width", pw); p1.setAttribute("height", ph);
-  p1.setAttribute("fill", "#fafafa"); p1.setAttribute("stroke", "#eeeeee"); p1.setAttribute("rx", "3");
-  g.appendChild(p1);
-  const p2 = document.createElementNS(NS, "rect");
-  p2.setAttribute("x", w / 2 - 4 - pw); p2.setAttribute("y", -h / 2 + h * 0.17);
-  p2.setAttribute("width", pw); p2.setAttribute("height", ph);
-  p2.setAttribute("fill", "#fafafa"); p2.setAttribute("stroke", "#eeeeee"); p2.setAttribute("rx", "3");
-  g.appendChild(p2);
-
-  const blanket = document.createElementNS(NS, "rect");
-  blanket.setAttribute("x", -w / 2 + 2); blanket.setAttribute("y", h / 2 - h * 0.28);
-  blanket.setAttribute("width", w - 4); blanket.setAttribute("height", h * 0.26);
-  blanket.setAttribute("fill", "#c0d8e8"); blanket.setAttribute("rx", "2");
-  g.appendChild(blanket);
+  g.appendChild(
+    setAttrs(svgEl("rect"), {
+      x: -bodyW / 2,
+      y: -h / 2,
+      width: bodyW,
+      height: backH,
+      fill: pal.back,
+      stroke: pal.stroke,
+      rx: 3,
+    })
+  );
+  if (hasArm) {
+    g.appendChild(
+      setAttrs(svgEl("rect"), {
+        x: -bodyW / 2,
+        y: -h / 2 + backH,
+        width: armW,
+        height: seatH,
+        fill: pal.arm,
+        stroke: pal.stroke,
+        rx: 2,
+      })
+    );
+    g.appendChild(
+      setAttrs(svgEl("rect"), {
+        x: bodyW / 2 - armW,
+        y: -h / 2 + backH,
+        width: armW,
+        height: seatH,
+        fill: pal.arm,
+        stroke: pal.stroke,
+        rx: 2,
+      })
+    );
+  }
+  for (var i = 0; i < seatCount; i++) {
+    g.appendChild(
+      setAttrs(svgEl("rect"), {
+        x: -bodyW / 2 + armW + cushionW * i + 1,
+        y: -h / 2 + backH + 1,
+        width: cushionW - 2,
+        height: seatH - 2,
+        fill: pal.cushion,
+        stroke: pal.stroke,
+        rx: 2,
+      })
+    );
+  }
+  if (hasLounge && loungeW > 0) {
+    g.appendChild(
+      setAttrs(svgEl("rect"), {
+        x: bodyW / 2,
+        y: -h / 2,
+        width: loungeW,
+        height: h,
+        fill: pal.lounge,
+        stroke: pal.stroke,
+        rx: 3,
+      })
+    );
+  }
 }
 
 function renderSectional(g, w, h) {
-  const main = document.createElementNS(NS, "rect");
-  main.setAttribute("x", -w / 2); main.setAttribute("y", -h / 2);
-  main.setAttribute("width", w * 0.70); main.setAttribute("height", h);
-  main.setAttribute("fill", "#d8d8d8"); main.setAttribute("rx", "3");
-  g.appendChild(main);
-  const side = document.createElementNS(NS, "rect");
-  side.setAttribute("x", w / 2 - w * 0.30); side.setAttribute("y", -h / 2);
-  side.setAttribute("width", w * 0.30); side.setAttribute("height", h * 0.55);
-  side.setAttribute("fill", "#d0d0d0"); side.setAttribute("rx", "3");
-  g.appendChild(side);
-
-  const c1 = document.createElementNS(NS, "rect");
-  c1.setAttribute("x", -w / 2 + 3); c1.setAttribute("y", -h / 2 + 2);
-  c1.setAttribute("width", w * 0.64); c1.setAttribute("height", h * 0.22);
-  c1.setAttribute("fill", "#e0e0e0"); c1.setAttribute("rx", "2");
-  g.appendChild(c1);
-  const c2 = document.createElementNS(NS, "rect");
-  c2.setAttribute("x", w / 2 - w * 0.28); c2.setAttribute("y", -h / 2 + 2);
-  c2.setAttribute("width", w * 0.25); c2.setAttribute("height", h * 0.48);
-  c2.setAttribute("fill", "#d8d8d8"); c2.setAttribute("rx", "2");
-  g.appendChild(c2);
-}
-
-function renderSofa(g, w, h) {
-  const back = document.createElementNS(NS, "rect");
-  back.setAttribute("x", -w / 2); back.setAttribute("y", -h / 2);
-  back.setAttribute("width", w); back.setAttribute("height", h * 0.30);
-  back.setAttribute("fill", "#d0d0d0"); back.setAttribute("rx", "3");
-  g.appendChild(back);
-  const body = document.createElementNS(NS, "rect");
-  body.setAttribute("x", -w / 2); body.setAttribute("y", -h / 2 + h * 0.22);
-  body.setAttribute("width", w); body.setAttribute("height", h * 0.78);
-  body.setAttribute("fill", "#e0e0e0"); body.setAttribute("rx", "3");
-  g.appendChild(body);
-  const armW = w * 0.08;
-  const a1 = document.createElementNS(NS, "rect");
-  a1.setAttribute("x", -w / 2); a1.setAttribute("y", -h / 2 + h * 0.12);
-  a1.setAttribute("width", armW); a1.setAttribute("height", h * 0.76);
-  a1.setAttribute("fill", "#c8c8c8"); a1.setAttribute("rx", "2");
-  g.appendChild(a1);
-  const a2 = document.createElementNS(NS, "rect");
-  a2.setAttribute("x", w / 2 - armW); a2.setAttribute("y", -h / 2 + h * 0.12);
-  a2.setAttribute("width", armW); a2.setAttribute("height", h * 0.76);
-  a2.setAttribute("fill", "#c8c8c8"); a2.setAttribute("rx", "2");
-  g.appendChild(a2);
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h * 0.45, fill: "#dcdcdc", stroke: "#bbbbbb", rx: 4 }));
+  g.appendChild(setAttrs(svgEl("rect"), { x: w / 2 - w * 0.32, y: -h / 2, width: w * 0.32, height: h, fill: "#dcdcdc", stroke: "#bbbbbb", rx: 4 }));
 }
 
 function renderTable(g, w, h, chairs) {
-  const top = document.createElementNS(NS, "rect");
-  top.setAttribute("x", -w / 2); top.setAttribute("y", -h / 2);
-  top.setAttribute("width", w); top.setAttribute("height", h);
-  top.setAttribute("fill", "#c4a882"); top.setAttribute("stroke", "#b09870");
-  top.setAttribute("rx", "3");
-  g.appendChild(top);
-
-  const shine = document.createElementNS(NS, "rect");
-  shine.setAttribute("x", -w / 2 + 2); shine.setAttribute("y", -h / 2 + 2);
-  shine.setAttribute("width", w - 4); shine.setAttribute("height", h / 3);
-  shine.setAttribute("fill", "#ffffff"); shine.setAttribute("opacity", "0.12"); shine.setAttribute("rx", "2");
-  g.appendChild(shine);
-
-  const chW = Math.min(w, h) * 0.22, chH = Math.min(w, h) * 0.20;
-  const positions = [
-    { x: 0, y: -h / 2 - chH * 0.6 },
-    { x: 0, y: h / 2 + chH * 0.6 },
-    { x: -w / 2 - chW * 0.6, y: 0 },
-    { x: w / 2 + chW * 0.6, y: 0 }
-  ];
-  (positions.slice(0, Math.min(chairs || 4, 6))).forEach(function (pos) {
-    const chair = document.createElementNS(NS, "g");
-    const seat = document.createElementNS(NS, "rect");
-    seat.setAttribute("x", pos.x - chW / 2); seat.setAttribute("y", pos.y - chH / 2);
-    seat.setAttribute("width", chW); seat.setAttribute("height", chH);
-    seat.setAttribute("fill", "#f5f5f5"); seat.setAttribute("stroke", "#d0d0d0"); seat.setAttribute("rx", "2");
-    chair.appendChild(seat);
-    const cb = document.createElementNS(NS, "rect");
-    cb.setAttribute("x", pos.x - chW / 2); cb.setAttribute("y", pos.y - chH / 2);
-    cb.setAttribute("width", chW); cb.setAttribute("height", chH * 0.30);
-    cb.setAttribute("fill", "#e8e8e8"); cb.setAttribute("rx", "1");
-    chair.appendChild(cb);
-    g.appendChild(chair);
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h, fill: "#c9a87c", stroke: "#a08060", rx: 4 }));
+  var chW = Math.min(w, h) * 0.22;
+  var chH = Math.min(w, h) * 0.22;
+  [
+    { x: 0, y: -h / 2 - chH * 0.5 },
+    { x: 0, y: h / 2 + chH * 0.5 },
+    { x: -w / 2 - chW * 0.5, y: 0 },
+    { x: w / 2 + chW * 0.5, y: 0 },
+  ].slice(0, Math.min(chairs || 4, 4)).forEach(function (pos) {
+    g.appendChild(setAttrs(svgEl("rect"), { x: pos.x - chW / 2, y: pos.y - chH / 2, width: chW, height: chH, fill: "#f5f5f5", stroke: "#cccccc", rx: 3 }));
   });
 }
 
 function renderChair(g, w, h) {
-  const back = document.createElementNS(NS, "rect");
-  back.setAttribute("x", -w / 2); back.setAttribute("y", -h / 2);
-  back.setAttribute("width", w); back.setAttribute("height", h * 0.28);
-  back.setAttribute("fill", "#d0d0d0"); back.setAttribute("rx", "2");
-  g.appendChild(back);
-  const seat = document.createElementNS(NS, "rect");
-  seat.setAttribute("x", -w / 2); seat.setAttribute("y", -h / 2 + h * 0.20);
-  seat.setAttribute("width", w); seat.setAttribute("height", h * 0.58);
-  seat.setAttribute("fill", "#f0f0f0"); seat.setAttribute("stroke", "#d8d8d8"); seat.setAttribute("rx", "2");
-  g.appendChild(seat);
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h * 0.28, fill: "#d5d5d5", stroke: "#bbbbbb", rx: 3 }));
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2 + h * 0.22, width: w, height: h * 0.55, fill: "#e8e8e8", stroke: "#bbbbbb", rx: 3 }));
 }
 
 function renderKitchenIsland(g, w, h) {
-  const island = document.createElementNS(NS, "rect");
-  island.setAttribute("x", -w / 2); island.setAttribute("y", -h / 2);
-  island.setAttribute("width", w); island.setAttribute("height", h);
-  island.setAttribute("fill", "#f5f0e8"); island.setAttribute("stroke", "#e0d8c8");
-  island.setAttribute("rx", "2");
-  g.appendChild(island);
-
-  const counter = document.createElementNS(NS, "rect");
-  counter.setAttribute("x", -w / 2); counter.setAttribute("y", -h / 2);
-  counter.setAttribute("width", w); counter.setAttribute("height", h * 0.20);
-  counter.setAttribute("fill", "#e8ddd0"); counter.setAttribute("stroke", "#d8cdb8");
-  g.appendChild(counter);
-
-  for (let i = -1; i <= 1; i++) {
-    const stool = document.createElementNS(NS, "rect");
-    stool.setAttribute("x", (i * w * 0.28) - 4);
-    stool.setAttribute("y", h / 2 + 3);
-    stool.setAttribute("width", "8"); stool.setAttribute("height", "6");
-    stool.setAttribute("fill", "#555555"); stool.setAttribute("rx", "1");
-    g.appendChild(stool);
-  }
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h, fill: "#ffffff", stroke: "#dddddd", rx: 2 }));
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h * 0.25, fill: "#f0f0f0", stroke: "#cccccc", rx: 2 }));
 }
 
 function renderBathtub(g, w, h) {
-  const tub = document.createElementNS(NS, "rect");
-  tub.setAttribute("x", -w / 2); tub.setAttribute("y", -h / 2);
-  tub.setAttribute("width", w); tub.setAttribute("height", h);
-  tub.setAttribute("fill", "#ffffff"); tub.setAttribute("stroke", "#d0d0d0");
-  tub.setAttribute("rx", "8");
-  g.appendChild(tub);
-  const water = document.createElementNS(NS, "rect");
-  water.setAttribute("x", -w / 2 + 4); water.setAttribute("y", -h / 2 + 4);
-  water.setAttribute("width", w - 8); water.setAttribute("height", h - 8);
-  water.setAttribute("fill", "#e8f4f8"); water.setAttribute("rx", "5");
-  g.appendChild(water);
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h, fill: "#ffffff", stroke: "#cccccc", rx: 10 }));
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2 + 3, y: -h / 2 + 3, width: w - 6, height: h - 6, fill: "#e8f4f8", rx: 7 }));
 }
 
 function renderToilet(g, w, h) {
-  const tank = document.createElementNS(NS, "rect");
-  tank.setAttribute("x", -w / 2 + w * 0.10); tank.setAttribute("y", -h / 2);
-  tank.setAttribute("width", w * 0.80); tank.setAttribute("height", h * 0.30);
-  tank.setAttribute("fill", "#ffffff"); tank.setAttribute("stroke", "#d0d0d0");
-  tank.setAttribute("rx", "2");
-  g.appendChild(tank);
-  const bowl = document.createElementNS(NS, "ellipse");
-  bowl.setAttribute("cx", "0"); bowl.setAttribute("cy", h * 0.10);
-  bowl.setAttribute("rx", w * 0.28); bowl.setAttribute("ry", h * 0.28);
-  bowl.setAttribute("fill", "#ffffff"); bowl.setAttribute("stroke", "#d0d0d0");
-  g.appendChild(bowl);
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2 + w * 0.15, y: -h / 2, width: w * 0.7, height: h * 0.35, fill: "#ffffff", stroke: "#cccccc", rx: 3 }));
+  g.appendChild(setAttrs(svgEl("ellipse"), { cx: 0, cy: h * 0.15, rx: w * 0.3, ry: h * 0.32, fill: "#ffffff", stroke: "#cccccc" }));
 }
 
 function renderSink(g, w, h) {
-  const base = document.createElementNS(NS, "rect");
-  base.setAttribute("x", -w / 2); base.setAttribute("y", -h / 2);
-  base.setAttribute("width", w); base.setAttribute("height", h);
-  base.setAttribute("fill", "#ffffff"); base.setAttribute("stroke", "#d8d8d8");
-  g.appendChild(base);
-  const basin = document.createElementNS(NS, "ellipse");
-  basin.setAttribute("cx", "0"); basin.setAttribute("cy", "0");
-  basin.setAttribute("rx", w * 0.32); basin.setAttribute("ry", h * 0.32);
-  basin.setAttribute("fill", "#f0f5f9"); basin.setAttribute("stroke", "#d8e0e8");
-  g.appendChild(basin);
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h, fill: "#ffffff", stroke: "#cccccc", rx: 2 }));
+  g.appendChild(setAttrs(svgEl("ellipse"), { cx: 0, cy: 0, rx: w * 0.32, ry: h * 0.32, fill: "#f0f5f9", stroke: "#dddddd" }));
 }
 
 function renderDesk(g, w, h) {
-  const top = document.createElementNS(NS, "rect");
-  top.setAttribute("x", -w / 2); top.setAttribute("y", -h / 2);
-  top.setAttribute("width", w); top.setAttribute("height", h);
-  top.setAttribute("fill", "#c4a882"); top.setAttribute("stroke", "#b09870");
-  top.setAttribute("rx", "2");
-  g.appendChild(top);
-  const chair = document.createElementNS(NS, "rect");
-  chair.setAttribute("x", -w * 0.15); chair.setAttribute("y", h / 2 + 2);
-  chair.setAttribute("width", w * 0.30); chair.setAttribute("height", h * 0.40);
-  chair.setAttribute("fill", "#444444"); chair.setAttribute("rx", "2");
-  g.appendChild(chair);
-  const monitor = document.createElementNS(NS, "rect");
-  monitor.setAttribute("x", -w * 0.10); monitor.setAttribute("y", -h / 2 - h * 0.12);
-  monitor.setAttribute("width", w * 0.20); monitor.setAttribute("height", h * 0.14);
-  monitor.setAttribute("fill", "#2a2a2a"); monitor.setAttribute("rx", "1");
-  g.appendChild(monitor);
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h, fill: "#c9a87c", stroke: "#a08060", rx: 3 }));
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w * 0.18, y: h / 2 + 2, width: w * 0.36, height: h * 0.45, fill: "#333333", rx: 3 }));
 }
 
 function renderPlant(g, w, h) {
-  const pot = document.createElementNS(NS, "rect");
-  pot.setAttribute("x", -w / 2); pot.setAttribute("y", -h / 2 + h * 0.35);
-  pot.setAttribute("width", w); pot.setAttribute("height", h * 0.65);
-  pot.setAttribute("fill", "#c9a07c"); pot.setAttribute("rx", "2");
-  g.appendChild(pot);
-  const leaf1 = document.createElementNS(NS, "circle");
-  leaf1.setAttribute("cx", "0"); leaf1.setAttribute("cy", -h / 2 + h * 0.18);
-  leaf1.setAttribute("r", w * 0.40);
-  leaf1.setAttribute("fill", "#6b8e23"); leaf1.setAttribute("opacity", "0.85");
-  g.appendChild(leaf1);
-  const leaf2 = document.createElementNS(NS, "circle");
-  leaf2.setAttribute("cx", -w * 0.12); leaf2.setAttribute("cy", -h / 2 + h * 0.25);
-  leaf2.setAttribute("r", w * 0.25);
-  leaf2.setAttribute("fill", "#7a9e33"); leaf2.setAttribute("opacity", "0.7");
-  g.appendChild(leaf2);
-  const leaf3 = document.createElementNS(NS, "circle");
-  leaf3.setAttribute("cx", w * 0.12); leaf3.setAttribute("cy", -h / 2 + h * 0.25);
-  leaf3.setAttribute("r", w * 0.25);
-  leaf3.setAttribute("fill", "#5a7e13"); leaf3.setAttribute("opacity", "0.7");
-  g.appendChild(leaf3);
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2 + h * 0.35, width: w, height: h * 0.65, fill: "#c4956a", stroke: "#a07050", rx: 3 }));
+  g.appendChild(setAttrs(svgEl("circle"), { cx: 0, cy: -h / 2 + h * 0.25, r: w * 0.45, fill: "#6b8e23", opacity: 0.9 }));
 }
 
 function renderRugItem(g, w, h) {
-  const rug = document.createElementNS(NS, "rect");
-  rug.setAttribute("x", -w / 2); rug.setAttribute("y", -h / 2);
-  rug.setAttribute("width", w); rug.setAttribute("height", h);
-  rug.setAttribute("fill", "url(#carpet)"); rug.setAttribute("stroke", "#d8d0c4");
-  rug.setAttribute("rx", "4");
-  g.appendChild(rug);
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h, fill: "url(#carpet)", stroke: "#e0d8cc", rx: 6 }));
 }
 
-function renderWardrobe(g, w, h) {
-  const body = document.createElementNS(NS, "rect");
-  body.setAttribute("x", -w / 2); body.setAttribute("y", -h / 2);
-  body.setAttribute("width", w); body.setAttribute("height", h);
-  body.setAttribute("fill", "#f5f5f5"); body.setAttribute("stroke", "#e0e0e0");
-  body.setAttribute("rx", "1");
-  g.appendChild(body);
-  const doorLine = document.createElementNS(NS, "line");
-  doorLine.setAttribute("x1", "0"); doorLine.setAttribute("y1", -h / 2);
-  doorLine.setAttribute("x2", "0"); doorLine.setAttribute("y2", h / 2);
-  doorLine.setAttribute("stroke", "#e0e0e0"); doorLine.setAttribute("stroke-width", "1");
-  g.appendChild(doorLine);
-}
-
-function renderTV(g, w, h) {
-  const stand = document.createElementNS(NS, "rect");
-  stand.setAttribute("x", -w / 2); stand.setAttribute("y", -h / 2 + h * 0.25);
-  stand.setAttribute("width", w); stand.setAttribute("height", h * 0.75);
-  stand.setAttribute("fill", "#2a2a2a"); stand.setAttribute("rx", "2");
-  g.appendChild(stand);
-  const screen = document.createElementNS(NS, "rect");
-  screen.setAttribute("x", -w / 2 + 2); screen.setAttribute("y", -h / 2 + h * 0.28);
-  screen.setAttribute("width", w - 4); screen.setAttribute("height", h * 0.50);
-  screen.setAttribute("fill", "#1a1a1a"); screen.setAttribute("rx", "1");
-  g.appendChild(screen);
-}
-
-function renderStove(g, w, h) {
-  const body = document.createElementNS(NS, "rect");
-  body.setAttribute("x", -w / 2); body.setAttribute("y", -h / 2);
-  body.setAttribute("width", w); body.setAttribute("height", h);
-  body.setAttribute("fill", "#e8e8e8"); body.setAttribute("stroke", "#d0d0d0");
-  g.appendChild(body);
-  [[-0.18, -0.18], [0.18, -0.18], [-0.18, 0.18], [0.18, 0.18]].forEach(function(pos) {
-    const burner = document.createElementNS(NS, "circle");
-    burner.setAttribute("cx", w * pos[0]);
-    burner.setAttribute("cy", h * pos[1]);
-    burner.setAttribute("r", w * 0.10);
-    burner.setAttribute("fill", "#333333");
-    g.appendChild(burner);
-  });
-}
-
-function renderFridge(g, w, h) {
-  const body = document.createElementNS(NS, "rect");
-  body.setAttribute("x", -w / 2); body.setAttribute("y", -h / 2);
-  body.setAttribute("width", w); body.setAttribute("height", h);
-  body.setAttribute("fill", "#f8f8f8"); body.setAttribute("stroke", "#e0e0e0");
-  g.appendChild(body);
-  const split = document.createElementNS(NS, "line");
-  split.setAttribute("x1", -w / 2); split.setAttribute("y1", "0");
-  split.setAttribute("x2", w / 2); split.setAttribute("y2", "0");
-  split.setAttribute("stroke", "#e0e0e0"); split.setAttribute("stroke-width", "1");
-  g.appendChild(split);
-  const handle = document.createElementNS(NS, "rect");
-  handle.setAttribute("x", w / 2 - w * 0.06); handle.setAttribute("y", h * 0.15);
-  handle.setAttribute("width", w * 0.03); handle.setAttribute("height", h * 0.18);
-  handle.setAttribute("fill", "#c0c0c0"); handle.setAttribute("rx", "1");
-  g.appendChild(handle);
-}
-
-// --- Clean Labels with Background ---
 function renderLabels(svg, rooms, size) {
   (rooms || []).forEach(function (room) {
     if (!room.polygon || room.polygon.length < 3) return;
-    const point = room.labelPoint || polygonCentroid(room.polygon);
-    const bbox = polygonBBox(room.polygon);
-    const roomWidthPx = Math.max(1, (bbox.maxX - bbox.minX) * size.width);
-    const roomHeightPx = Math.max(1, (bbox.maxY - bbox.minY) * size.height);
-    const label = layoutRoomLabel({
-      name: room.name || room.id || "Room",
-      dims: room.dimensionsText || room.dimensions || "",
-      maxWidthPx: Math.min(200, Math.max(56, roomWidthPx * 0.88)),
-      maxHeightPx: Math.max(24, roomHeightPx * 0.4),
+    var point = room.labelPoint || polygonCentroid(room.polygon);
+    var g = setAttrs(svgEl("g"), {
+      class: "plan-label",
+      transform: "translate(" + point.x * size.width + " " + point.y * size.height + ")",
     });
-    const tx = point.x * size.width;
-    const ty = point.y * size.height;
 
-    const roomId = room.id || room.name || "";
-    const g = document.createElementNS(NS, "g");
-    g.setAttribute("class", "plan-label");
-    g.setAttribute("data-room-label", roomId);
-    g.setAttribute("transform", "translate(" + tx + " " + ty + ")");
-
-    const bg = document.createElementNS(NS, "rect");
-    bg.setAttribute("class", "plan-label-bg");
-    bg.setAttribute("x", String(-label.pillWidth / 2));
-    bg.setAttribute("y", String(-label.pillHeight / 2));
-    bg.setAttribute("width", String(label.pillWidth));
-    bg.setAttribute("height", String(label.pillHeight));
-    bg.setAttribute("fill", "#ffffff");
-    bg.setAttribute("opacity", "0.55");
-    bg.setAttribute("rx", "6");
-    g.appendChild(bg);
-
-    let y = -label.pillHeight / 2 + label.paddingY;
-    label.lines.forEach(function (line) {
-      const text = document.createElementNS(NS, "text");
-      text.setAttribute("class", line.kind === "dims" ? "plan-label-dims" : "plan-label-name");
-      text.setAttribute("text-anchor", "middle");
-      text.setAttribute("dominant-baseline", "hanging");
-      text.setAttribute("font-family", "'Segoe UI', Arial, sans-serif");
-      text.setAttribute("font-size", String(line.kind === "dims" ? label.dimsFontSize : label.nameFontSize));
-      text.setAttribute("font-weight", line.kind === "dims" ? "400" : "600");
-      text.setAttribute("fill", line.kind === "dims" ? "#777777" : "#2c2c2c");
-      text.setAttribute("y", String(y));
-      text.textContent = line.text;
-      g.appendChild(text);
-      y += line.lineHeight;
+    var name = setAttrs(svgEl("text"), {
+      class: "plan-label-name",
+      "text-anchor": "middle",
+      "dominant-baseline": "middle",
+      "font-family": "Arial, Helvetica, sans-serif",
+      "font-size": 13,
+      "font-weight": 600,
+      fill: "#2c2c2c",
     });
+    name.textContent = room.name || room.id || "Room";
+    g.appendChild(name);
+
+    if (room.dimensionsText || room.dimensions) {
+      var dims = setAttrs(svgEl("text"), {
+        class: "plan-label-dims",
+        "text-anchor": "middle",
+        "dominant-baseline": "middle",
+        dy: "1.5em",
+        "font-family": "Arial, Helvetica, sans-serif",
+        "font-size": 10,
+        "font-weight": 400,
+        fill: "#555555",
+      });
+      dims.textContent = room.dimensionsText || String(room.dimensions);
+      g.appendChild(dims);
+    }
 
     svg.appendChild(g);
   });
 }
 
-/**
- * @param {SVGSVGElement} svg
- * @param {Array<object>} rooms
- * @param {{ width:number, height:number }} size
- */
-function normToPx(p, size) {
-  return { x: p.x * size.width, y: p.y * size.height };
-}
-
-/**
- * @param {SVGSVGElement} svg
- * @param {{ segments?: Array<object> }|null} calibration
- * @param {{ width:number, height:number }} size
- * @param {{ from: {x:number,y:number}, to?: {x:number,y:number} }|null} draftSegment
- */
-export function renderCalibrationOverlays(svg, calibration, size, draftSegment) {
-  const g = document.createElementNS(NS, "g");
-  g.setAttribute("class", "plan-calibration-layer");
-  g.setAttribute("pointer-events", "none");
-
-  function drawSegment(from, to, dashed) {
-    const a = normToPx(from, size);
-    const b = normToPx(to, size);
-    const line = document.createElementNS(NS, "line");
-    line.setAttribute("x1", String(a.x));
-    line.setAttribute("y1", String(a.y));
-    line.setAttribute("x2", String(b.x));
-    line.setAttribute("y2", String(b.y));
-    line.setAttribute("class", "plan-calibration-line");
-    if (dashed) line.setAttribute("stroke-dasharray", "6 4");
-    g.appendChild(line);
-    [a, b].forEach(function (pt) {
-      const dot = document.createElementNS(NS, "circle");
-      dot.setAttribute("cx", String(pt.x));
-      dot.setAttribute("cy", String(pt.y));
-      dot.setAttribute("r", "5");
-      dot.setAttribute("class", "plan-calibration-dot");
-      g.appendChild(dot);
-    });
-  }
-
-  (calibration && calibration.segments ? calibration.segments : []).forEach(function (seg) {
-    const from = seg.from || seg.a;
-    const to = seg.to || seg.b;
-    if (!from || !to) return;
-    drawSegment(from, to, false);
-  });
-
-  if (draftSegment && draftSegment.from) {
-    if (draftSegment.to) drawSegment(draftSegment.from, draftSegment.to, true);
-    else {
-      const a = normToPx(draftSegment.from, size);
-      const dot = document.createElementNS(NS, "circle");
-      dot.setAttribute("cx", String(a.x));
-      dot.setAttribute("cy", String(a.y));
-      dot.setAttribute("r", "6");
-      dot.setAttribute("class", "plan-calibration-dot plan-calibration-dot-draft");
-      g.appendChild(dot);
-    }
-  }
-
-  svg.appendChild(g);
-}
-
-/**
- * @param {SVGSVGElement} svg
- * @param {{ from: {x:number,y:number}, to: {x:number,y:number}, label: string }|null} measure
- * @param {{ width:number, height:number }} size
- * @param {{ from: {x:number,y:number}, to?: {x:number,y:number} }|null} draftSegment
- */
-export function renderMeasureOverlay(svg, measure, size, draftSegment) {
-  const g = document.createElementNS(NS, "g");
-  g.setAttribute("class", "plan-measure-layer");
-  g.setAttribute("pointer-events", "none");
-
-  function drawSegment(from, to, label, dashed) {
-    const a = normToPx(from, size);
-    const b = normToPx(to, size);
-    const line = document.createElementNS(NS, "line");
-    line.setAttribute("x1", String(a.x));
-    line.setAttribute("y1", String(a.y));
-    line.setAttribute("x2", String(b.x));
-    line.setAttribute("y2", String(b.y));
-    line.setAttribute("class", "plan-measure-line");
-    if (dashed) line.setAttribute("stroke-dasharray", "5 4");
-    g.appendChild(line);
-    [a, b].forEach(function (pt) {
-      const dot = document.createElementNS(NS, "circle");
-      dot.setAttribute("cx", String(pt.x));
-      dot.setAttribute("cy", String(pt.y));
-      dot.setAttribute("r", "5");
-      dot.setAttribute("class", "plan-measure-dot");
-      g.appendChild(dot);
-    });
-    if (label) {
-      const mx = (a.x + b.x) / 2;
-      const my = (a.y + b.y) / 2;
-      const text = document.createElementNS(NS, "text");
-      text.setAttribute("x", String(mx));
-      text.setAttribute("y", String(my - 8));
-      text.setAttribute("class", "plan-measure-label");
-      text.setAttribute("text-anchor", "middle");
-      text.textContent = label;
-      g.appendChild(text);
-    }
-  }
-
-  if (measure && measure.from && measure.to) {
-    drawSegment(measure.from, measure.to, measure.label || "", false);
-  }
-  if (draftSegment && draftSegment.from) {
-    if (draftSegment.to) drawSegment(draftSegment.from, draftSegment.to, "", true);
-    else {
-      const a = normToPx(draftSegment.from, size);
-      const dot = document.createElementNS(NS, "circle");
-      dot.setAttribute("cx", String(a.x));
-      dot.setAttribute("cy", String(a.y));
-      dot.setAttribute("r", "6");
-      dot.setAttribute("class", "plan-measure-dot plan-measure-dot-draft");
-      g.appendChild(dot);
-    }
-  }
-
-  svg.appendChild(g);
-}
-
-/**
- * @param {SVGSVGElement} svg
- * @param {Array<object>} rooms
- * @param {string|null} selectedRoomId
- * @param {{ width:number, height:number }} size
- */
-/**
- * @param {SVGSVGElement} svg
- * @param {Array<{x:number,y:number}>} points
- * @param {{x:number,y:number}|null} cursor
- * @param {string} areaLabel
- * @param {{ width:number, height:number }} size
- */
-export function renderDrawRoomOverlay(svg, points, cursor, areaLabel, size) {
-  if (!points || !points.length) return;
-  const g = document.createElementNS(NS, "g");
-  g.setAttribute("class", "plan-draw-room-layer");
-  g.setAttribute("pointer-events", "none");
-
-  const pts = points.map(function (p) {
-    return normToPx(p, size);
-  });
-  if (pts.length >= 2) {
-    const openPts = pts
-      .map(function (p) {
-        return p.x + "," + p.y;
-      })
-      .join(" ");
-    const polyline = document.createElementNS(NS, "polyline");
-    polyline.setAttribute("class", "plan-draw-room-line");
-    polyline.setAttribute("points", openPts + (cursor ? " " + cursor.x + "," + cursor.y : ""));
-    polyline.setAttribute("fill", "none");
-    g.appendChild(polyline);
-  }
-  if (pts.length >= 3) {
-    const closed = document.createElementNS(NS, "polygon");
-    closed.setAttribute("class", "plan-draw-room-fill");
-    closed.setAttribute(
-      "points",
-      pts
-        .map(function (p) {
-          return p.x + "," + p.y;
-        })
-        .join(" ")
-    );
-    g.appendChild(closed);
-  }
-  pts.forEach(function (p, i) {
-    const dot = document.createElementNS(NS, "circle");
-    dot.setAttribute("cx", String(p.x));
-    dot.setAttribute("cy", String(p.y));
-    dot.setAttribute("r", i === 0 ? "7" : "5");
-    dot.setAttribute("class", "plan-draw-room-dot" + (i === 0 ? " plan-draw-room-dot-first" : ""));
-    g.appendChild(dot);
-  });
-  if (cursor && pts.length) {
-    const dot = document.createElementNS(NS, "circle");
-    dot.setAttribute("cx", String(cursor.x));
-    dot.setAttribute("cy", String(cursor.y));
-    dot.setAttribute("r", "4");
-    dot.setAttribute("class", "plan-draw-room-dot plan-draw-room-dot-cursor");
-    g.appendChild(dot);
-  }
-  if (areaLabel && pts.length >= 2) {
-    const anchor = cursor || pts[pts.length - 1];
-    const text = document.createElementNS(NS, "text");
-    text.setAttribute("x", String(anchor.x + 10));
-    text.setAttribute("y", String(anchor.y - 10));
-    text.setAttribute("class", "plan-draw-room-area-label");
-    text.textContent = "(" + areaLabel + ")";
-    g.appendChild(text);
-  }
-  svg.appendChild(g);
-}
-
-/**
- * @param {SVGSVGElement} svg
- * @param {object|null} room
- * @param {string} areaLabel
- * @param {string|null} dimLabel
- * @param {{ width:number, height:number }} size
- */
-export function renderRoomMeasurementBadge(svg, room, areaLabel, dimLabel, size) {
-  if (!room || !room.polygon || room.polygon.length < 3) return;
-  const c = room.labelPoint || polygonCentroid(room.polygon);
-  const px = c.x * size.width;
-  const py = c.y * size.height;
-  const g = document.createElementNS(NS, "g");
-  g.setAttribute("class", "plan-room-measure-badge");
-  g.setAttribute("pointer-events", "none");
-  const lines = [areaLabel];
-  if (dimLabel) lines.push(dimLabel);
-  const lineH = 14;
-  const padX = 8;
-  const padY = 6;
-  const w = Math.max(72, Math.max.apply(null, lines.map(function (l) { return l.length * 6.5; })));
-  const h = lines.length * lineH + padY * 2;
-  const rect = document.createElementNS(NS, "rect");
-  rect.setAttribute("x", String(px - w / 2));
-  rect.setAttribute("y", String(py - h / 2));
-  rect.setAttribute("width", String(w));
-  rect.setAttribute("height", String(h));
-  rect.setAttribute("rx", "4");
-  rect.setAttribute("class", "plan-room-measure-badge-bg");
-  g.appendChild(rect);
-  lines.forEach(function (line, i) {
-    const text = document.createElementNS(NS, "text");
-    text.setAttribute("x", String(px));
-    text.setAttribute("y", String(py - h / 2 + padY + (i + 0.75) * lineH));
-    text.setAttribute("class", "plan-room-measure-badge-text");
-    text.setAttribute("text-anchor", "middle");
-    text.textContent = line;
-    g.appendChild(text);
-  });
-  svg.appendChild(g);
-}
-
-export function renderSelectedRoomOutline(svg, rooms, selectedRoomId, size) {
-  if (!selectedRoomId) return;
-  const room = (rooms || []).find(function (r) {
-    return (r.id || r.name || "") === selectedRoomId;
-  });
-  if (!room || !room.polygon || room.polygon.length < 3) return;
-  const poly = document.createElementNS(NS, "polygon");
-  poly.setAttribute("class", "plan-room-selected");
-  poly.setAttribute("points", pointsAttr(room.polygon, size.width, size.height));
-  poly.setAttribute("fill", "none");
-  svg.appendChild(poly);
-}
-
-export function renderVertexHandles(svg, rooms, size) {
+/** Dashed in-room boundary shown while moving furniture. */
+function renderWalkableBoundary(svg, rooms, size, visible) {
+  if (!visible) return;
   (rooms || []).forEach(function (room) {
     if (!room.polygon || room.polygon.length < 3) return;
-    const roomId = room.id || room.name || "";
-    room.polygon.forEach(function (p, i) {
-      const c = document.createElementNS(NS, "circle");
-      c.setAttribute("class", "plan-vertex-handle");
-      c.setAttribute("data-room-id", roomId);
-      c.setAttribute("data-vertex-index", String(i));
-      c.setAttribute("cx", String(p.x * size.width));
-      c.setAttribute("cy", String(p.y * size.height));
-      c.setAttribute("r", "6");
-      c.setAttribute("fill", "#ff5722");
-      c.setAttribute("stroke", "#ffffff");
-      c.setAttribute("stroke-width", "2");
-      svg.appendChild(c);
-    });
+    svg.appendChild(
+      setAttrs(svgEl("polygon"), {
+        class: "walkable-boundary",
+        points: pointsAttr(room.polygon, size.width, size.height),
+        fill: "rgba(37, 99, 235, 0.05)",
+        stroke: "#2563eb",
+        "stroke-width": 2,
+        "stroke-dasharray": "8 5",
+        opacity: 0.6,
+        "pointer-events": "none",
+      })
+    );
   });
 }
 
-/**
- * @param {SVGSVGElement} svg
- * @param {object} data
- * @param {string|null} activeRoomId
- * @param {string|null} selectedFurnitureId
- * @param {{ width:number, height:number }} size
- * @param {{ vertexEditMode?: boolean, selectedRoomId?: string|null, scaleDraft?: object|null, measureResult?: object|null, measureDraft?: object|null, drawRoomPoints?: Array<object>|null, drawRoomCursor?: object|null, drawRoomAreaLabel?: string, roomMeasureBadge?: object|null, selectedVertex?: object|null }} [options]
- */
+function renderHitHighlights(svg, rooms, activeRoomId, size) {
+  (rooms || []).forEach(function (room) {
+    if (!room.polygon || room.polygon.length < 3) return;
+    svg.appendChild(
+      setAttrs(svgEl("polygon"), {
+        class: "hi",
+        "data-room": room.id || room.name || "",
+        points: pointsAttr(room.polygon, size.width, size.height),
+        opacity: activeRoomId === room.id || activeRoomId === room.name ? 1 : 0,
+      })
+    );
+  });
+}
+
 export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size, options) {
-  const opts = options || {};
+  var opts = options || {};
   svg.innerHTML = "";
   renderBackground(svg, size);
   createDefs(svg);
-
   renderTexturedFills(svg, data.rooms || [], activeRoomId, size);
   renderRugs(svg, data.rooms || [], size);
   renderWindows(svg, data.windows || [], size);
-  renderWalls(svg, data.walls || [], size);
+  renderDoorArcs(svg, data.doors || [], size);
+  renderWalls(svg, data.walls || [], data.rooms || [], size);
+  renderWalkableBoundary(svg, data.rooms || [], size, !!selectedFurnitureId && !opts.vertexEditMode);
   renderDetailedFurniture(svg, data.furniture || [], data.furniture_catalog || [], selectedFurnitureId, size);
   renderLabels(svg, data.rooms || [], size);
   renderSelectedRoomOutline(svg, data.rooms || [], opts.selectedRoomId || null, size);
@@ -1187,20 +754,7 @@ export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size, o
     );
   }
   if (opts.vertexEditMode) {
-    renderVertexHandles(svg, data.rooms || [], size);
-    if (opts.selectedVertex) {
-      const handles = svg.querySelectorAll(".plan-vertex-handle");
-      handles.forEach(function (h) {
-        const rid = h.getAttribute("data-room-id");
-        const vi = parseInt(h.getAttribute("data-vertex-index"), 10);
-        if (
-          rid === opts.selectedVertex.roomId &&
-          vi === opts.selectedVertex.index
-        ) {
-          h.setAttribute("fill", "#e91e63");
-          h.setAttribute("r", "8");
-        }
-      });
-    }
+    renderVertexHandles(svg, data.rooms || [], size, opts.selectedVertex || null);
   }
+  renderHitHighlights(svg, data.rooms || [], activeRoomId, size);
 }

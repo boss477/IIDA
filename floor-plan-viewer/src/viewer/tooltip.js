@@ -29,3 +29,18 @@ export function showRoomTooltip(tipEl, e, room, opts) {
 export function hideTooltip(tipEl) {
   tipEl.hidden = true;
 }
+
+/** @param {HTMLElement} tipEl
+ * @param {{ clientX: number, clientY: number }} e
+ * @param {string} label
+ */
+export function showFurnitureTooltip(tipEl, e, label) {
+  if (!label) {
+    hideTooltip(tipEl);
+    return;
+  }
+  tipEl.innerHTML = "<strong>" + label + "</strong>";
+  tipEl.hidden = false;
+  tipEl.style.left = Math.min(e.clientX + 14, window.innerWidth - 360) + "px";
+  tipEl.style.top = Math.min(e.clientY + 14, window.innerHeight - 80) + "px";
+}

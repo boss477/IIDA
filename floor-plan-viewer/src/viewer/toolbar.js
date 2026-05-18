@@ -1,11 +1,11 @@
 import { FLOORING_OPTIONS, ROOM_PRESETS } from "./planTools.js";
 
 /**
- * @param {HTMLElement} container
- * @param {object} handlers
+ * Row 1: file, zoom, export, LLM.
  */
-export function mountToolbar(container, handlers) {
-  container.innerHTML = "";
+export function mountFileToolbar(container, handlers) {
+  var row = document.createElement("div");
+  row.className = "toolbar-row toolbar-row--file";
 
   var lab = document.createElement("label");
   lab.className = "btn";
@@ -15,31 +15,55 @@ export function mountToolbar(container, handlers) {
   inp.accept = "image/*";
   inp.hidden = true;
   lab.appendChild(inp);
-  container.appendChild(lab);
+  row.appendChild(lab);
+
+  function addButton(text, fn) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn";
+    b.textContent = text;
+    b.addEventListener("click", fn);
+    row.appendChild(b);
+    return b;
+  }
+
+  addButton("Load sample JSON", handlers.loadFixture);
+  if (handlers.uploadSupabase) addButton("Upload plan (Supabase)", handlers.uploadSupabase);
+  addButton("+", handlers.zoomIn);
+  addButton("−", handlers.zoomOut);
+  addButton("Reset", handlers.reset);
+  if (handlers.exportJson) addButton("Export JSON", handlers.exportJson);
+  if (handlers.analyzeLlm) addButton("Analyze LLM", handlers.analyzeLlm);
+  addButton("Fullscreen", handlers.fullscreen);
+
+  container.appendChild(row);
+  return { fileInput: inp, row: row };
+}
+
+/**
+ * Row 2: geometry tools (single active mode).
+ */
+export function mountGeometryToolbar(container, handlers) {
+  var row = document.createElement("div");
+  row.className = "toolbar-row toolbar-row--geometry";
+
+  var groupLab = document.createElement("span");
+  groupLab.className = "toolbar-group-label";
+  groupLab.textContent = "Geometry";
+  row.appendChild(groupLab);
 
   var buttons = {};
 
   function addButton(text, fn, key) {
     var b = document.createElement("button");
     b.type = "button";
+    b.className = "btn";
     b.textContent = text;
     b.addEventListener("click", fn);
-    container.appendChild(b);
+    row.appendChild(b);
     if (key) buttons[key] = b;
     return b;
   }
-
-  addButton("Load sample JSON", handlers.loadFixture);
-  if (handlers.uploadSupabase) {
-    addButton("Upload plan (Supabase)", handlers.uploadSupabase);
-  }
-  addButton("+", handlers.zoomIn);
-  addButton("−", handlers.zoomOut);
-  addButton("Reset", handlers.reset);
-  if (handlers.exportJson) addButton("Export JSON", handlers.exportJson);
-  if (handlers.exportCorrectedJson) addButton("Export corrected JSON", handlers.exportCorrectedJson);
-  if (handlers.analyzeLlm) addButton("Analyze LLM", handlers.analyzeLlm);
-  if (handlers.toggleGeometryOnly) addButton("Geometry only", handlers.toggleGeometryOnly);
 
   buttons.btnSetScale = addButton("Set scale", handlers.toggleSetScale, "btnSetScale");
   buttons.btnMeasure = addButton("Measure", handlers.toggleMeasure, "btnMeasure");
@@ -55,41 +79,38 @@ export function mountToolbar(container, handlers) {
     o.textContent = p.label;
     roomPresetSelect.appendChild(o);
   });
-  container.appendChild(roomPresetSelect);
+  row.appendChild(roomPresetSelect);
 
   var finishRoomBtn = document.createElement("button");
   finishRoomBtn.type = "button";
   finishRoomBtn.textContent = "Finish room";
-  finishRoomBtn.className = "finish-room-btn";
+  finishRoomBtn.className = "btn finish-room-btn";
   finishRoomBtn.hidden = true;
   finishRoomBtn.addEventListener("click", handlers.finishDrawRoom);
-  container.appendChild(finishRoomBtn);
+  row.appendChild(finishRoomBtn);
 
   var deleteVertexBtn = document.createElement("button");
   deleteVertexBtn.type = "button";
   deleteVertexBtn.textContent = "Delete vertex";
-  deleteVertexBtn.className = "delete-vertex-btn";
+  deleteVertexBtn.className = "btn delete-vertex-btn";
   deleteVertexBtn.hidden = true;
   deleteVertexBtn.addEventListener("click", handlers.deleteSelectedVertex);
-  container.appendChild(deleteVertexBtn);
+  row.appendChild(deleteVertexBtn);
 
   var btnUndo = document.createElement("button");
   btnUndo.type = "button";
   btnUndo.textContent = "Undo";
-  btnUndo.className = "undo-btn";
+  btnUndo.className = "btn undo-btn";
   btnUndo.disabled = true;
-  btnUndo.setAttribute("aria-label", "Undo last room or vertex change");
   btnUndo.title = "Undo (Ctrl+Z)";
   btnUndo.addEventListener("click", handlers.undo);
-  container.appendChild(btnUndo);
-
-  addButton("Fullscreen", handlers.fullscreen);
+  row.appendChild(btnUndo);
 
   var scaleLengthWrap = document.createElement("span");
   scaleLengthWrap.className = "scale-length-wrap";
   scaleLengthWrap.hidden = true;
   var scaleLengthLabel = document.createElement("label");
-  scaleLengthLabel.textContent = "Length (m)";
+  scaleLengthLabel.textContent = "Length (m) ";
   scaleLengthLabel.className = "scale-length-label";
   var scaleLengthInput = document.createElement("input");
   scaleLengthInput.type = "number";
@@ -100,22 +121,22 @@ export function mountToolbar(container, handlers) {
   var scaleApplyBtn = document.createElement("button");
   scaleApplyBtn.type = "button";
   scaleApplyBtn.textContent = "Apply scale";
-  scaleApplyBtn.className = "scale-apply-btn";
+  scaleApplyBtn.className = "btn scale-apply-btn";
   scaleApplyBtn.addEventListener("click", handlers.applyScale);
   scaleLengthLabel.appendChild(scaleLengthInput);
   scaleLengthWrap.appendChild(scaleLengthLabel);
   scaleLengthWrap.appendChild(scaleApplyBtn);
-  container.appendChild(scaleLengthWrap);
+  row.appendChild(scaleLengthWrap);
 
   var measureReadout = document.createElement("span");
   measureReadout.className = "measure-readout";
   measureReadout.textContent = "Measure: —";
-  container.appendChild(measureReadout);
+  row.appendChild(measureReadout);
 
   var roomMeasureReadout = document.createElement("span");
   roomMeasureReadout.className = "room-measure-readout";
   roomMeasureReadout.textContent = "Room: —";
-  container.appendChild(roomMeasureReadout);
+  row.appendChild(roomMeasureReadout);
 
   var floorLab = document.createElement("label");
   floorLab.className = "floor-picker-label";
@@ -136,10 +157,12 @@ export function mountToolbar(container, handlers) {
   });
   floorSelect.addEventListener("change", handlers.onFloorChange);
   floorLab.appendChild(floorSelect);
-  container.appendChild(floorLab);
+  row.appendChild(floorLab);
+
+  container.appendChild(row);
 
   return {
-    fileInput: inp,
+    row: row,
     btnSetScale: buttons.btnSetScale,
     btnMeasure: buttons.btnMeasure,
     btnVertexEdit: buttons.btnVertexEdit,
@@ -149,7 +172,6 @@ export function mountToolbar(container, handlers) {
     deleteVertexBtn: deleteVertexBtn,
     btnUndo: btnUndo,
     scaleLengthInput: scaleLengthInput,
-    scaleApplyBtn: scaleApplyBtn,
     scaleLengthWrap: scaleLengthWrap,
     measureReadout: measureReadout,
     roomMeasureReadout: roomMeasureReadout,
@@ -157,12 +179,13 @@ export function mountToolbar(container, handlers) {
   };
 }
 
-/**
- * @param {HTMLButtonElement} btn
- * @param {boolean} active
- */
 export function setToolButtonActive(btn, active) {
   if (!btn) return;
   if (active) btn.classList.add("tool-active");
   else btn.classList.remove("tool-active");
+}
+
+/** @deprecated use mountFileToolbar */
+export function mountToolbar(container, handlers) {
+  return mountFileToolbar(container, handlers);
 }

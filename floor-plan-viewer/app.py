@@ -1,15 +1,16 @@
 """
-Flask app: serves floor plan viewer + /api/analyze via Fireworks Kimi vision.
-  pip install -r requirements.txt
-  Set FIREWORKS_API_KEY and/or FIREWORKS_API_KEY_FALLBACK in .env (see .env.example)
-  npm run build && python app.py
+Flask proxy for LM Studio OpenAI-compatible API.
+  pip install flask requests
+  set LM_STUDIO_URL=http://10.212.228.25:1234/v1
+  set LM_STUDIO_MODEL=qwen/qwen3.5-9b
+  python app.py
   open http://127.0.0.1:5173
+  Or omit set … and use lm_studio.json in this folder.
 """
 import json
 import os
 import re
 from pathlib import Path
-from typing import Optional
 
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -19,93 +20,63 @@ DIST_DIR = ROOT_DIR / "dist"
 
 app = Flask(__name__, static_folder=None)
 
-ANALYZE_USER_TEXT = (
-    "Extract structural walls (outer shell + interior partitions as centerlines with thickness, "
-    "NOT room edges), room floor polygons for every visible bounded space including closets/laundry/mech, "
-    "windows on exterior walls, room labels with dimensionsText when printed on the plan, calibration "
-    "segments for horizontal width and vertical height when dimensions are printed, and furniture. "
-    "Trace room polygons along inner wall corners with multiple vertices per room—avoid 4-point bounding boxes. "
-    "Preserve exact aspect ratio and stepped/angled geometry. Output one compact valid JSON object only "
-    "(no trailing commas, no markdown)."
-)
 
-REFINE_BOX_ROOMS_TEXT = (
-    "REFINEMENT: Your previous output used too many 4-corner rectangular room polygons. "
-    "Re-output the complete JSON. For each room, trace the inner wall boundary with enough vertices "
-    "(usually 6–12+) to capture corners, L-shapes, and recesses. Minimize rooms that have only 4 points."
-)
-
-FIREWORKS_API_BASE = "https://api.fireworks.ai/inference/v1"
-FIREWORKS_CHAT_URL = f"{FIREWORKS_API_BASE}/chat/completions"
-VISION_CONNECT_TIMEOUT = 30
-
-
-def _load_env_file() -> None:
-    path = ROOT_DIR / ".env"
+def _read_json_object(path: Path) -> dict:
     if not path.is_file():
-        return
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            os.environ[key] = value
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
-_load_env_file()
-VISION_READ_TIMEOUT = max(
-    60, int(os.environ.get("FIREWORKS_READ_TIMEOUT", "7200"))
-)
-FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY", "").strip()
-FIREWORKS_API_KEY_FALLBACK = os.environ.get("FIREWORKS_API_KEY_FALLBACK", "").strip()
-FIREWORKS_MODEL = os.environ.get(
-    "FIREWORKS_MODEL", "accounts/fireworks/models/kimi-k2p6"
-).strip()
-VISION_PROVIDER = "fireworks"
+def resolve_lm_studio_settings() -> tuple[str, str]:
+    """
+    lm_studio.json + lm_studio.local.json override LM_STUDIO_* environment variables
+    so a stale shell `set LM_STUDIO_MODEL=...` cannot stick after you change defaults here.
+    """
+    default_url = "http://10.212.228.25:1234/v1"
+    default_model = "qwen/qwen3.5-9b"
+    cfg: dict = {}
+    cfg.update(_read_json_object(ROOT_DIR / "lm_studio.json"))
+    cfg.update(_read_json_object(ROOT_DIR / "lm_studio.local.json"))
+
+    def pick(json_key: str, env_key: str, default: str) -> str:
+        v = cfg.get(json_key)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+        ev = os.environ.get(env_key, "").strip()
+        if ev:
+            return ev
+        return default
+
+    return pick("lm_studio_url", "LM_STUDIO_URL", default_url).rstrip("/"), pick(
+        "lm_studio_model", "LM_STUDIO_MODEL", default_model
+    )
+
+
+LM_BASE, MODEL = resolve_lm_studio_settings()
 
 SYSTEM_PROMPT = """You analyze architectural floor plan images for a premium architectural SVG renderer.
 
-Return exactly one valid JSON object. Extract enough normalized geometry to redraw the plan as vector SVG.
+Return exactly one valid JSON object. Extract enough normalized geometry to redraw the plan as vector SVG: room floor materials, wall runs, door swings/openings, labels, and visible furniture.
 
-COORDINATE SYSTEM: all values are normalized 0.0-1.0. x = across image width, y = down image height, origin = top-left of the bitmap.
-Normalize against the FULL bitmap canvas, including whitespace and title text. Do not crop to the plan before producing coordinates.
-Preserve the original image aspect ratio. Do not normalize the plan into a square or redraw rooms as equal-size boxes.
-If the visible apartment footprint is wider than it is tall in the source image, the extracted outer shell bounding box must also be wider than tall.
-Trace the visible plan pixel-for-pixel: use the actual wall corners, offsets, angled corridor edges, jogs, and recesses. Do not simplify an irregular outline into rectangles.
+Rules:
+- analysisVersion must be the string "1.0".
+- All rooms, walls, doors, labels, and furniture use the same normalized 0-1 coordinate space: x across image width, y down image height, origin top-left of the bitmap (not the letterboxed HTML box).
+- rooms: array of { id, name, type, flooring, polygon, labelPoint, dimensionsText?, areaSqFt? }.
+- rooms[].flooring must be one of "wood", "tile", "stone", "carpet", or "plain". Use wood for living/dining/bedrooms/halls, tile for bathrooms, warm tile/plain for kitchens, and stone for balcony/patio/outdoor areas.
+- rooms[].polygon must be a list of {x,y} points tracing the inner wall boundary. Prefer 4+ points, but include every visible corner for L-shaped rooms.
+- rooms[].labelPoint must be {x,y} near the visual center of the room.
+- walls: array of { id?, points:[{x,y},...], thickness } for outer shell and partition walls. Use 5+ points for major wall runs when possible.
+- doors: array of { id?, type:"door", position:{x,y}, width, swing?, connects?, polygon? }. Include door swing/opening geometry when visible. Coordinates and width are normalized.
+- furniture_catalog: optional array of { id, name, shape?, width_mm?, depth_mm?, height_mm?, image_2d_url?, model_3d_url? }.
+- furniture: array of { id?, type, catalogId?, x, y, width?, height?, rotationDeg?, scale?, zIndex? } for all visible furniture and fixtures. x/y are centers and width/height are normalized.
+- Optional windows may be { id?, position:{x,y}, width, height? }.
 
-WALLS - most important field:
-- walls is a required array. Do NOT leave it empty if black wall lines are visible.
-- Walls are the thick black or dark lines you see in the image. Rooms are the filled zones between those lines.
-- Do NOT put room perimeter edges into walls. A wall is a structural element, not a room boundary.
-- Each wall entry: { id, role, points:[{x,y},...], thickness }
-  - role: "exterior" for outer building shell, "partition" for interior dividers.
-  - points: centerline of the wall. 2 points = short partition segment. 3+ points = wall run or closed exterior shell.
-  - thickness (normalized): exterior walls 0.012-0.018, interior partitions 0.006-0.010.
-- Include one closed exterior shell with all visible jogs/recesses plus individual partition segments between rooms.
-
-ROOMS:
-- rooms[].polygon traces the floor area INSIDE the walls (not the wall centerlines).
-- Include every labeled or visibly bounded space: bedrooms, living, kitchen, balcony, baths, walk-in closets, closet, laundry, mech, hall/corridor, and any small storage rooms.
-- CRITICAL: Do NOT output rectangular bounding boxes. Each room polygon needs enough vertices to follow the real wall shape (typically 6–12+ points for non-rectangular rooms).
-- Only use exactly 4 polygon points for a room if it is a perfect axis-aligned rectangle with no recesses; otherwise add vertices at every corner, jog, and step.
-- If a room has an angled or stepped boundary, include those vertices in order instead of approximating with a bounding box.
-- rooms[].flooring: "wood" for bedrooms/living/dining/halls, "tile" for bathrooms/wet areas, "plain" for kitchens/utility, "stone" for balconies/patios.
-- rooms[].labelPoint: {x,y} near visual center of room.
-
-OTHER FIELDS:
-- windows: include every window gap on exterior walls as { id, position:{x,y}, width, height? }.
-- rooms[].dimensionsText: copy printed dimensions when visible (e.g. "12' 0\\" x 9' 11\\"").
-- calibration: include at least two segments when dimensions are printed: one horizontal segment using the longest clear room width, and one vertical segment using the tallest clear room height. Format each as { id, from:{x,y}, to:{x,y}, lengthM }.
-- furniture: { id, type, x, y, width, height, rotationDeg? }. x/y are centers, normalized.
-- furniture_catalog: optional.
-- Omit doors[] entirely unless a door swing is needed for a visible room boundary.
-
-JSON RULES: strictly valid JSON; no trailing commas; close all brackets; keep response under token limit by omitting duplicative fields.
-
-Reply with ONLY valid JSON, no markdown, no code fences."""
+Reply with ONLY valid JSON, no markdown. Example shape:
+{"analysisVersion":"1.0","rooms":[{"id":"kitchen","name":"Kitchen","type":"kitchen","flooring":"tile","labelPoint":{"x":0.38,"y":0.4},"dimensionsText":"12 ft x 18 ft","polygon":[{"x":0.1,"y":0.2},{"x":0.5,"y":0.2},{"x":0.5,"y":0.6},{"x":0.1,"y":0.6}]}],"walls":[{"id":"outer-wall-1","points":[{"x":0.12,"y":0.18},{"x":0.86,"y":0.18},{"x":0.86,"y":0.74},{"x":0.32,"y":0.74},{"x":0.32,"y":0.92},{"x":0.12,"y":0.92}],"thickness":0.008}],"doors":[{"id":"door-1","type":"door","position":{"x":0.5,"y":0.6},"width":0.04,"swing":"right"}],"furniture":[{"id":"bed-1","type":"bed","x":0.7,"y":0.45,"width":0.12,"height":0.18,"rotationDeg":0}],"furniture_catalog":[]}"""
 
 
 def strip_fence(s: str) -> str:
@@ -119,76 +90,15 @@ def strip_fence(s: str) -> str:
     return t.strip()
 
 
-def repair_json_text(text: str) -> str:
-    t = text.strip()
-    t = re.sub(r",\s*}", "}", t)
-    t = re.sub(r",\s*]", "]", t)
-    start = t.find("{")
-    if start > 0:
-        t = t[start:]
-    end = t.rfind("}")
-    if end > 0:
-        t = t[: end + 1]
-    return t
-
-
-def escape_unescaped_inner_quotes(text: str) -> str:
-    out = []
-    in_string = False
-    escaped = False
-    n = len(text)
-
-    for i, ch in enumerate(text):
-        if escaped:
-            out.append(ch)
-            escaped = False
-            continue
-
-        if ch == "\\":
-            out.append(ch)
-            escaped = in_string
-            continue
-
-        if ch == '"':
-            if not in_string:
-                in_string = True
-                out.append(ch)
-                continue
-
-            j = i + 1
-            while j < n and text[j].isspace():
-                j += 1
-            next_ch = text[j] if j < n else ""
-            if next_ch in (":", ",", "}", "]", ""):
-                in_string = False
-                out.append(ch)
-            else:
-                out.append('\\"')
-            continue
-
-        out.append(ch)
-
-    return "".join(out)
-
-
 def parse_model_json(text: str) -> dict:
     cleaned = strip_fence(text)
-    repaired = repair_json_text(cleaned)
-    last_err = None
-    for candidate in (cleaned, repaired, escape_unescaped_inner_quotes(repaired)):
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError as err:
-            last_err = err
-    match = re.search(r"\{[\s\S]*\}", cleaned)
-    if match:
-        try:
-            return json.loads(repair_json_text(match.group(0)))
-        except json.JSONDecodeError as err:
-            last_err = err
-    if last_err is None:
-        raise ValueError("No JSON object in model response")
-    raise last_err
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r"\{[\s\S]*\}", cleaned)
+        if not match:
+            raise
+        return json.loads(match.group(0))
 
 
 def _num(value, default=None):
@@ -258,13 +168,7 @@ def _normalize_wall(wall: dict, idx: int) -> dict | None:
     out = _copy_keys(wall, ["id"])
     out.setdefault("id", f"wall-{idx}")
     out["points"] = points
-    role = str(wall.get("role") or wall.get("kind") or "").lower()
-    if role not in ("exterior", "partition"):
-        role = "exterior" if len(points) >= 4 else "partition"
-    out["role"] = role
-    default_thickness = 0.014 if role == "exterior" else 0.008
-    raw = wall.get("thickness")
-    out["thickness"] = _clamp(raw, lo=0.001, hi=0.05, default=default_thickness)
+    out["thickness"] = _clamp(wall.get("thickness"), lo=0.001, hi=0.05, default=0.008)
     return out
 
 
@@ -392,174 +296,9 @@ def parse_response(text: str) -> dict:
     return normalize_analysis(parse_model_json(text))
 
 
-def _shell_aspect_ratio(walls: list) -> float | None:
-    best = None
-    for wall in walls or []:
-        pts = wall.get("points") if isinstance(wall, dict) else None
-        if not pts or len(pts) < 3:
-            continue
-        role = str(wall.get("role") or "").lower()
-        if role == "exterior":
-            best = wall
-            break
-        if best is None or len(pts) > len(best.get("points") or []):
-            best = wall
-    if not best:
-        return None
-    xs = [p["x"] for p in best["points"] if isinstance(p, dict) and "x" in p and "y" in p]
-    ys = [p["y"] for p in best["points"] if isinstance(p, dict) and "x" in p and "y" in p]
-    if not xs or not ys:
-        return None
-    bw = max(xs) - min(xs)
-    bh = max(ys) - min(ys)
-    if bh < 1e-6:
-        return None
-    return bw / bh
-
-
-def _count_box_rooms(data: dict) -> tuple[int, int]:
-    rooms = data.get("rooms") or []
-    box = sum(
-        1
-        for r in rooms
-        if isinstance(r, dict) and len(r.get("polygon") or []) == 4
-    )
-    return box, len(rooms)
-
-
-def validate_analysis(data: dict, image_width: int, image_height: int) -> dict:
-    warnings: list[str] = []
-    blocking: str | None = None
-    rooms = data.get("rooms") or []
-    walls = data.get("walls") or []
-
-    if not walls:
-        blocking = (
-            "walls[] is empty — structural walls are required (wall layer will not be drawn). "
-            "Re-analyze or add walls in JSON."
-        )
-
-    box_count, room_count = _count_box_rooms(data)
-    if room_count > 3 and box_count > 0:
-        warnings.append(
-            f"{box_count} room(s) have only 4 polygon points (likely bounding boxes). "
-            "Use Edit vertices to refine, or re-analyze."
-        )
-
-    if image_width > 0 and image_height > 0 and walls:
-        shell_ar = _shell_aspect_ratio(walls)
-        if shell_ar is not None:
-            img_ar = image_width / image_height
-            rel_diff = abs(shell_ar - img_ar) / max(img_ar, 1e-6)
-            if rel_diff > 0.4:
-                warnings.append(
-                    f"Shell aspect ratio ({shell_ar:.2f}) differs from image ({img_ar:.2f}) by "
-                    f"{round(rel_diff * 100)}% — check scale or re-analyze."
-                )
-
-    return {"blocking": blocking, "warnings": warnings}
-
-
-def _should_refine_box_rooms(data: dict) -> bool:
-    box_count, room_count = _count_box_rooms(data)
-    if room_count < 4:
-        return False
-    return box_count >= 5 or (room_count > 0 and box_count / room_count >= 0.35)
-
-
-def b64_image_size(b64: str) -> tuple[int, int]:
-    try:
-        img_data = base64.b64decode(b64)
-        img = Image.open(BytesIO(img_data))
-        return img.width, img.height
-    except Exception:
-        return 0, 0
-
-
-def fireworks_api_keys() -> list[str]:
-    keys: list[str] = []
-    if FIREWORKS_API_KEY:
-        keys.append(FIREWORKS_API_KEY)
-    if FIREWORKS_API_KEY_FALLBACK and FIREWORKS_API_KEY_FALLBACK not in keys:
-        keys.append(FIREWORKS_API_KEY_FALLBACK)
-    return keys
-
-
-def fireworks_text_from_response(data: dict) -> str:
-    if isinstance(data.get("error"), dict):
-        err = data["error"]
-        raise ValueError(err.get("message") or str(err))
-    choices = data.get("choices") or []
-    if not choices:
-        raise ValueError("Fireworks returned no choices")
-    message = choices[0].get("message") or {}
-    text = message.get("content") or ""
-    if not str(text).strip():
-        raise ValueError("Fireworks returned empty text")
-    return str(text)
-
-
-def _fireworks_should_try_next_key(status: int) -> bool:
-    return status in (401, 403, 429) or status >= 500
-
-
-def analyze_with_fireworks(
-    image_b64: str, mime: str, extra_user_text: str | None = None
-) -> str:
-    keys = fireworks_api_keys()
-    if not keys:
-        raise ValueError(
-            "FIREWORKS_API_KEY or FIREWORKS_API_KEY_FALLBACK is not set. Add to floor-plan-viewer/.env"
-        )
-    user_text = ANALYZE_USER_TEXT
-    if extra_user_text:
-        user_text = user_text + "\n\n" + extra_user_text
-    body = {
-        "model": FIREWORKS_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_text},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime or 'image/png'};base64,{image_b64}"
-                        },
-                    },
-                ],
-            },
-        ],
-        "temperature": 0.2,
-        "max_tokens": 65536,
-    }
-    last_err: Optional[Exception] = None
-    for idx, api_key in enumerate(keys):
-        r = requests.post(
-            FIREWORKS_CHAT_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-            timeout=(VISION_CONNECT_TIMEOUT, VISION_READ_TIMEOUT),
-        )
-        try:
-            data = r.json()
-        except ValueError:
-            data = {}
-        if r.ok:
-            return fireworks_text_from_response(data)
-        err = data.get("error", {}) if isinstance(data, dict) else {}
-        msg = err.get("message") if isinstance(err, dict) else r.text
-        last_err = ValueError(f"Fireworks {r.status_code}: {msg}")
-        if idx < len(keys) - 1 and _fireworks_should_try_next_key(r.status_code):
-            continue
-        raise last_err
-    if last_err:
-        raise last_err
-    raise ValueError("Fireworks analyze failed")
+def lm_models_url() -> str:
+    base = re.sub(r"/v1$", "", LM_BASE)
+    return f"{base}/v1/models"
 
 
 def serve_index():
@@ -574,8 +313,8 @@ def serve_index():
     config_script = f"""
   <script>
     window.__ANALYZE_API__ = window.location.origin;
-    window.__SERVER_VISION_MODEL__ = {json.dumps(FIREWORKS_MODEL)};
-    window.__SERVER_VISION_PROVIDER__ = {json.dumps(VISION_PROVIDER)};
+    window.__SERVER_LM_MODEL__ = {json.dumps(MODEL)};
+    window.__SERVER_LM_BASE__ = {json.dumps(LM_BASE)};
   </script>"""
     html = html.replace("</head>", f"{config_script}\n</head>")
     return Response(html, mimetype="text/html")
@@ -596,46 +335,23 @@ def analyze_opts():
 
 @app.route("/api/health", methods=["GET"])
 def health():
-    keys = fireworks_api_keys()
-    if not keys:
-        return jsonify(
-            {
-                "ok": False,
-                "provider": VISION_PROVIDER,
-                "model": FIREWORKS_MODEL,
-                "error": "FIREWORKS_API_KEY / FIREWORKS_API_KEY_FALLBACK not set in .env",
-            }
-        ), 502
     try:
-        r = requests.post(
-            FIREWORKS_CHAT_URL,
-            headers={
-                "Authorization": f"Bearer {keys[0]}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": FIREWORKS_MODEL,
-                "messages": [{"role": "user", "content": "ping"}],
-                "max_tokens": 1,
-            },
-            timeout=15,
-        )
+        r = requests.get(lm_models_url(), timeout=5)
         return jsonify(
             {
                 "ok": r.ok,
-                "provider": VISION_PROVIDER,
-                "model": FIREWORKS_MODEL,
+                "lmStudioUrl": LM_BASE,
+                "model": MODEL,
                 "status": r.status_code,
-                "fallbackConfigured": bool(FIREWORKS_API_KEY_FALLBACK),
             }
         ), (200 if r.ok else 502)
     except requests.RequestException as e:
         return jsonify(
             {
                 "ok": False,
-                "provider": VISION_PROVIDER,
-                "model": FIREWORKS_MODEL,
-                "error": f"Fireworks API not reachable: {e}",
+                "lmStudioUrl": LM_BASE,
+                "model": MODEL,
+                "error": f"LM Studio is not reachable: {e}",
             }
         ), 502
 
@@ -644,7 +360,7 @@ import base64
 from io import BytesIO
 from PIL import Image
 
-def resize_image_b64(b64: str, max_size: int = 2048) -> str:
+def resize_image_b64(b64: str, max_size: int = 1024) -> str:
     try:
         img_data = base64.b64decode(b64)
         img = Image.open(BytesIO(img_data))
@@ -665,46 +381,43 @@ def analyze():
         if not b64:
             return jsonify({"error": "imageBase64 required"}), 400
         
-        b64 = resize_image_b64(b64, max_size=2048)
-        img_w, img_h = b64_image_size(b64)
+        # Downscale the image to prevent context size errors in LM Studio
+        b64 = resize_image_b64(b64, max_size=1024)
+        
         mime = payload.get("mimeType") or "image/png"
-        txt = analyze_with_fireworks(b64, mime)
-        parsed = parse_response(txt)
-        if _should_refine_box_rooms(parsed):
-            try:
-                txt2 = analyze_with_fireworks(b64, mime, REFINE_BOX_ROOMS_TEXT)
-                parsed2 = parse_response(txt2)
-                box1, _ = _count_box_rooms(parsed)
-                box2, _ = _count_box_rooms(parsed2)
-                if box2 < box1:
-                    parsed = parsed2
-            except (ValueError, requests.RequestException):
-                pass
-
-        validation = validate_analysis(parsed, img_w, img_h)
-        if validation.get("blocking"):
-            raise ValueError(validation["blocking"])
-        warnings = validation.get("warnings") or []
-        if warnings:
-            parsed = dict(parsed)
-            parsed["_validationWarnings"] = warnings
-        return jsonify(parsed)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 502
-    except requests.Timeout as e:
-        return (
-            jsonify(
+        url = f"{LM_BASE}/chat/completions"
+        body = {
+            "model": MODEL or "local-model",
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {
-                    "error": (
-                        f"Fireworks API timed out (read timeout={VISION_READ_TIMEOUT}s). "
-                        f"Increase FIREWORKS_READ_TIMEOUT in .env (e.g. 7200 or 10800) and restart the server."
-                    )
-                }
-            ),
-            504,
-        )
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Extract rooms, flooring materials, walls, doors, windows, labels, dimensions, and furniture for a premium vector SVG redraw. Output JSON only.",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{b64}"},
+                        },
+                    ],
+                },
+            ],
+            "temperature": 0.2,
+            "max_tokens": 8192,
+        }
+        
+        r = requests.post(url, json=body, timeout=(10, 3600))
+
+        if not r.ok:
+            return jsonify({"error": f"LM Studio: {r.status_code} {r.text}"}), 502
+        data = r.json()
+        txt = data["choices"][0]["message"]["content"]
+        parsed = parse_response(txt)
+        return jsonify(parsed)
     except requests.RequestException as e:
-        return jsonify({"error": f"Fireworks API error: {e}"}), 502
+        return jsonify({"error": f"LM Studio is not reachable at {LM_BASE}: {e}"}), 502
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -732,13 +445,6 @@ def spa_fallback(_path):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5173"))
     print(f"Floor plan viewer http://127.0.0.1:{port}")
-    print(f"Analyze API http://127.0.0.1:{port}/api/analyze -> Fireworks {FIREWORKS_MODEL}")
-    if fireworks_api_keys():
-        print(
-            "Fireworks API key(s): "
-            + ("primary + fallback" if len(fireworks_api_keys()) > 1 else "loaded")
-        )
-    else:
-        print("Fireworks API key: MISSING — set FIREWORKS_API_KEY in .env")
-    print(f"Fireworks read timeout: {VISION_READ_TIMEOUT}s (FIREWORKS_READ_TIMEOUT in .env)")
-    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+    print(f"Analyze API http://127.0.0.1:{port}/api/analyze -> LM {LM_BASE}")
+    print(f"LM Studio model: {MODEL} (edit lm_studio.json to change; overrides shell env)")
+    app.run(host="127.0.0.1", port=port, debug=False)

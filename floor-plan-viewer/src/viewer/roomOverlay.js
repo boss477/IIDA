@@ -1,5 +1,3 @@
-import { animateRoomHighlight } from "./planAnimations.js";
-
 const NS = "http://www.w3.org/2000/svg";
 
 function pointsAttr(polygon, imageWidth, imageHeight) {
@@ -61,5 +59,12 @@ export function renderRoomFills(svg, rooms, activeId, imageSize, colorForRoom) {
  * @param {string|null} activeId
  */
 export function updateRoomHighlight(svg, activeId) {
-  animateRoomHighlight(svg, activeId, { duration: 0.22 });
+  svg.querySelectorAll("[data-room]").forEach(function (el) {
+    var id = el.getAttribute("data-room");
+    el.setAttribute("opacity", id === activeId ? "1" : "0");
+  });
+  svg.querySelectorAll("[data-room-fill]").forEach(function (el) {
+    var id = el.getAttribute("data-room-fill");
+    el.setAttribute("data-active", id === activeId ? "1" : "0");
+  });
 }

@@ -17,194 +17,30 @@ body {
   border-bottom: 1px solid var(--bar-border);
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
 }
-.btn,
-button {
-  padding: 6px 12px;
-  border: 1px solid #94a3b8;
-  border-radius: 8px;
-  background: #f8fafc;
-  cursor: pointer;
-  font: inherit;
-}
-button:hover {
-  background: #e2e8f0;
-}
-#stage {
-  height: calc(100vh - 52px);
-  padding: 12px;
-}
-#viewport {
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  border-radius: 12px;
-  background: var(--viewport-bg);
-  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);
-}
-#content {
-  position: relative;
-  width: max-content;
-  margin: 0 auto;
-  transform-origin: 0 0;
-  will-change: transform;
-}
-.plan-wrap {
-  position: relative;
-  width: max-content;
-  height: max-content;
-  background: var(--plan-chrome);
-  border-radius: 8px;
-}
-#plan {
-  display: block;
-  width: auto;
-  height: auto;
-  vertical-align: top;
-}
-#overlay {
-  position: absolute;
-  overflow: visible;
-  pointer-events: none;
-  background: transparent;
-  border-radius: 6px;
-}
-.plan-wrap.geometry-only #plan {
-  opacity: 0;
-  pointer-events: none;
-}
-#overlay .plan-vertex-handle {
-  pointer-events: auto;
-  cursor: move;
-}
-#overlay .plan-vertex-handle:hover {
-  fill: #ff9800;
-}
-.wall-warning {
-  color: #b45309;
-  font-size: 13px;
-  max-width: 420px;
-}
-#overlay .plan-bg {
-  fill: #fff;
-}
-#overlay .plan-room-fill {
-  stroke: none;
-}
-#overlay .plan-room-fill[data-active="1"] {
-  stroke: none;
-}
-#overlay .plan-wall {
-  fill: #111111;
-  stroke: none;
-  pointer-events: none;
-}
-#overlay .plan-label {
-  pointer-events: none;
-  font-family: "Segoe UI", Arial, sans-serif;
-  fill: #2a1d12;
-}
-#overlay .plan-label-name {
-  font-weight: 600;
-}
-#overlay .plan-label-dims {
-  font-weight: 400;
-}
-#overlay .hi {
-  fill: var(--hi);
-  pointer-events: none;
-}
-#overlay .plan-room-hover-top {
-  pointer-events: none;
-}
-#overlay .plan-window {
-  pointer-events: none;
-}
-#overlay .furniture-img {
-  pointer-events: none;
-  opacity: 0.92;
-}
-#overlay .furniture-g {
-  pointer-events: auto;
-  cursor: grab;
-  will-change: transform;
-}
-#overlay .furniture-g:active {
-  cursor: grabbing;
-}
-#overlay .furniture-g[data-dragging="1"] {
-  cursor: grabbing;
-}
-#overlay .furniture-selected {
-  filter: url(#soft-furniture-shadow);
-}
-#overlay .furniture-select-ring {
-  pointer-events: none;
-}
-#overlay .door-mark {
-  pointer-events: none;
-}
-.toolbar-hint {
-  margin-left: auto;
-  font-size: 12px;
-  color: #64748b;
-  max-width: 320px;
-  text-align: right;
-}
-.calibration-scale {
-  font-size: 12px;
-  color: #0f766e;
-  background: #ecfdf5;
-  border: 1px solid #99f6e4;
-  border-radius: 6px;
-  padding: 4px 8px;
-  max-width: 280px;
-  line-height: 1.3;
-}
-.measure-readout {
-  font-size: 12px;
-  color: #1e40af;
-  background: #eff6ff;
-  border: 1px solid #93c5fd;
-  border-radius: 6px;
-  padding: 4px 8px;
-  max-width: 240px;
-  line-height: 1.3;
-}
-.scale-length-wrap {
-  display: inline-flex;
-  align-items: center;
+.bar.bar--stacked {
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
-  font-size: 12px;
 }
-.scale-length-label {
-  display: inline-flex;
+.toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
-  gap: 4px;
+  width: 100%;
 }
-.scale-length-input {
-  width: 72px;
-  padding: 2px 6px;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
+.toolbar-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  padding: 2px 6px 2px 0;
+  flex-shrink: 0;
 }
-.scale-apply-btn {
-  padding: 2px 8px;
-  font-size: 12px;
-  border: 1px solid #0d9488;
-  border-radius: 4px;
-  background: #ccfbf1;
-  cursor: pointer;
-}
-.floor-picker-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-}
-.floor-picker-select {
-  font-size: 12px;
-  padding: 2px 4px;
-  max-width: 160px;
+.toolbar-row--furniture {
+  padding-top: 4px;
+  border-top: 1px solid #e2e8f0;
 }
 .bar button.tool-active {
   background: #0f766e;
@@ -214,13 +50,13 @@ button:hover {
 .plan-wrap.tool-crosshair {
   cursor: crosshair;
 }
+#overlay .plan-vertex-handle {
+  pointer-events: auto;
+  cursor: grab;
+}
 #overlay .plan-calibration-line {
   stroke: #0d9488;
   stroke-width: 2.5;
-  stroke-dasharray: none;
-}
-#overlay .plan-calibration-line[stroke-dasharray] {
-  stroke-dasharray: 6 4;
 }
 #overlay .plan-calibration-dot {
   fill: #14b8a6;
@@ -243,106 +79,204 @@ button:hover {
   fill: #f59e0b;
 }
 #overlay .plan-measure-label {
-  font-family: "Segoe UI", Arial, sans-serif;
+  font-family: system-ui, sans-serif;
   font-size: 13px;
   font-weight: 600;
   fill: #1e3a8a;
-  paint-order: stroke;
-  stroke: #fff;
-  stroke-width: 3px;
-  stroke-linejoin: round;
 }
 #overlay .plan-room-selected {
   stroke: #ea580c;
   stroke-width: 3;
   stroke-dasharray: 8 4;
+}
+#overlay .plan-draw-room-line {
+  stroke: #ea580c;
+  stroke-width: 2;
+  fill: none;
+}
+#overlay .plan-draw-room-fill {
+  fill: rgba(234, 88, 12, 0.12);
+  stroke: #ea580c;
+  stroke-width: 2;
+}
+#overlay .plan-draw-room-dot {
+  fill: #ea580c;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+#overlay .plan-draw-room-area-label {
+  font-size: 12px;
+  fill: #9a3412;
+  font-weight: 600;
+}
+.room-measure-readout,
+.measure-readout {
+  font-size: 12px;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.room-preset-select,
+.floor-picker-select {
+  font-size: 12px;
+  padding: 2px 4px;
+  max-width: 140px;
+}
+.scale-length-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.scale-length-input {
+  width: 5rem;
+  font: inherit;
+  padding: 2px 6px;
+}
+.btn,
+button {
+  padding: 6px 12px;
+  border: 1px solid #94a3b8;
+  border-radius: 8px;
+  background: #f8fafc;
+  cursor: pointer;
+  font: inherit;
+}
+button:hover {
+  background: #e2e8f0;
+}
+#stage {
+  height: calc(100vh - 140px);
+  padding: 12px;
+}
+#viewport {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--viewport-bg);
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);
+}
+#content {
+  position: relative;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.plan-wrap {
+  position: relative;
+  width: min(92vw, 900px);
+  height: min(calc(100vh - 120px), 980px);
+  background: var(--plan-chrome);
+  border-radius: 8px;
+}
+#plan {
+  display: none;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  vertical-align: top;
+}
+#overlay {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+  background: #fff;
+  border-radius: 6px;
+}
+#overlay .plan-bg {
+  fill: #fff;
+}
+#overlay .plan-room-fill {
+  stroke: rgba(30, 27, 24, 0.18);
+  stroke-width: 1;
+  transition: stroke 0.18s ease, stroke-width 0.18s ease, opacity 0.18s ease;
+}
+#overlay .plan-room-fill[data-active="1"] {
+  stroke: rgba(30, 27, 24, 0.42);
+  stroke-width: 2;
+}
+#overlay .walkable-boundary {
   pointer-events: none;
 }
-.room-measure-readout {
+#overlay .plan-wall {
+  fill: none;
+  stroke: #1a1a1a;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+#overlay .plan-label {
+  pointer-events: none;
+  font-family: Georgia, "Times New Roman", serif;
+  fill: #2a1d12;
+}
+#overlay .plan-label-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+#overlay .plan-label-dims {
+  font-size: 10px;
+  font-weight: 600;
+}
+#overlay .hi {
+  fill: var(--hi);
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+#overlay .furniture-img {
+  pointer-events: none;
+  opacity: 0.92;
+}
+#overlay .furniture-g {
+  pointer-events: auto;
+  cursor: grab;
+}
+#overlay .furniture-g:active {
+  cursor: grabbing;
+}
+#overlay .furniture-select-ring {
+  pointer-events: none;
+}
+#overlay .door-mark {
+  pointer-events: none;
+}
+.toolbar-hint {
+  flex: 1 1 100%;
+  margin-left: 0;
+  font-size: 12px;
+  color: #64748b;
+  max-width: 320px;
+  text-align: right;
+}
+.calibration-scale {
+  font-size: 12px;
+  color: #0f766e;
+  background: #ecfdf5;
+  border: 1px solid #99f6e4;
+  border-radius: 6px;
+  padding: 4px 8px;
+  max-width: 280px;
+  line-height: 1.3;
+}
+#toolbar select[aria-label="Sofa color"] {
+  min-width: 11rem;
+  max-width: 14rem;
+}
+.furniture-info {
   font-size: 12px;
   color: #9a3412;
   background: #fff7ed;
   border: 1px solid #fdba74;
   border-radius: 6px;
   padding: 4px 8px;
-  max-width: 320px;
-  line-height: 1.3;
-}
-.room-preset-select {
-  font-size: 12px;
-  padding: 2px 4px;
-  max-width: 130px;
-}
-.finish-room-btn,
-.delete-vertex-btn {
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.finish-room-btn {
-  border: 1px solid #7c3aed;
-  background: #ede9fe;
-  color: #5b21b6;
-}
-.delete-vertex-btn {
-  border: 1px solid #dc2626;
-  background: #fef2f2;
-  color: #991b1b;
-}
-.undo-btn {
-  font-size: 12px;
-  padding: 2px 10px;
-  border-radius: 4px;
-  border: 1px solid #64748b;
-  background: #f1f5f9;
-  color: #334155;
-  cursor: pointer;
-}
-.undo-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-#overlay .plan-draw-room-line {
-  stroke: #7c3aed;
-  stroke-width: 2;
-  fill: none;
-}
-#overlay .plan-draw-room-fill {
-  fill: rgba(237, 233, 254, 0.55);
-  stroke: #7c3aed;
-  stroke-width: 2;
-  stroke-dasharray: 6 4;
-}
-#overlay .plan-draw-room-dot {
-  fill: #7c3aed;
-  stroke: #fff;
-  stroke-width: 1.5;
-}
-#overlay .plan-draw-room-dot-first {
-  fill: #f59e0b;
-  stroke: #fff;
-  stroke-width: 2;
-}
-#overlay .plan-draw-room-area-label {
-  font-family: "Segoe UI", Arial, sans-serif;
-  font-size: 14px;
-  font-weight: 700;
-  fill: #5b21b6;
-  paint-order: stroke;
-  stroke: #fff;
-  stroke-width: 3px;
-}
-#overlay .plan-room-measure-badge-bg {
-  fill: rgba(255, 255, 255, 0.92);
-  stroke: #fdba74;
-  stroke-width: 1.5;
-}
-#overlay .plan-room-measure-badge-text {
-  font-family: "Segoe UI", Arial, sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-  fill: #9a3412;
+  max-width: 360px;
+  line-height: 1.35;
 }
 .llm-status {
   font-size: 12px;

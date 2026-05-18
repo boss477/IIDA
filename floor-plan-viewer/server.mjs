@@ -8,7 +8,6 @@ import { VISION_SYSTEM_PROMPT, VISION_USER_TEXT } from "./src/lib/visionPrompt.j
 var LM_BASE = process.env.LM_STUDIO_URL || "http://127.0.0.1:1234/v1";
 var MODEL = process.env.LM_STUDIO_MODEL || "";
 var PORT = parseInt(process.env.PORT || "8787", 10);
-var LM_READ_TIMEOUT_MS = 36000 * 1000;
 
 function json(res, status, body, headers) {
   var h = Object.assign(
@@ -59,15 +58,12 @@ async function lmChat(imageBase64, mimeType) {
       },
     ],
     temperature: 0.2,
-    max_tokens: 120000,
-    enable_thinking: false,
-    chat_template_kwargs: { enable_thinking: false },
+    max_tokens: 8192,
   };
   var r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(LM_READ_TIMEOUT_MS),
   });
   if (!r.ok) {
     var t = await r.text();

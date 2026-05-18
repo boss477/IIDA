@@ -1,96 +1,88 @@
-# Floor plan viewer
+# Floor plan viewer (Vite + vanilla JS)
 
-Web app to open architectural floor plans, extract room geometry with **AI vision**, and edit the result interactively with **real-world measurements**.
-
-**Stack:** Vite + vanilla JS, SVG overlay, Flask API, [Fireworks AI](https://fireworks.ai/) (Kimi K2.6 vision).
+Implements the **Production floor-plan viewer** plan: **Vite**, **vanilla ES modules**, **plain CSS** (no Tailwind/React/TS required), **SVG** overlay with a pixel-based `viewBox="0 0 naturalWidth naturalHeight"` while JSON stays normalized `0–1`, **letterbox-aware** pointer mapping + **ray-casting** hit tests ([`src/lib/geometry.js`](src/lib/geometry.js)), zoom/pan/fullscreen, premium tooltip.
 
 ## Quick start
 
 ```bash
-cd floor-plan-viewer
 npm install
-cp .env.example .env   # add FIREWORKS_API_KEY
 npm start
 ```
 
-Open **http://127.0.0.1:5173**
+Open `http://127.0.0.1:5173`. **Load sample JSON** loads [`public/fixtures/sample-plan.json`](public/fixtures/sample-plan.json) (rooms-only v1). **Open image** and pick a matching floor plan to see overlays line up.
 
-- **Open image** — load a floor plan (PNG/JPG)
-- **Analyze LLM** — extract rooms, walls, furniture (requires API key)
-- **Load sample JSON** — demo data without calling the API
+Phase 2 sample (catalog + sprites): [`public/fixtures/sample-plan-phase2.json`](public/fixtures/sample-plan-phase2.json) — swap the fetch path in [`src/viewer/floorPlanViewer.js`](src/viewer/floorPlanViewer.js) or merge data as needed.
 
-## Features
+## Architecture
 
-### AI floor plan analysis
-- Upload an image → **Fireworks Kimi K2.6** returns structured JSON (rooms, walls, windows, furniture, calibration hints)
-- Re-run with **Analyze LLM** without re-uploading
-- Configurable timeout (`FIREWORKS_READ_TIMEOUT`, default **3600s**)
-
-### View & navigate
-- SVG overlay aligned to the raster image (normalized `0–1` coordinates)
-- Zoom, pan, fullscreen, **geometry-only** mode (hide background image)
-- Room hover highlight + tooltip (name, dimensions, calibrated area)
-
-### Measurements & scale
-- **Set scale** — click two points on a known dimension, enter length in **meters**, **Apply scale**
-- **Measure** — click two points; readout in **m** (or pixels if scale not set)
-- **Room** readout — area and approximate **W × H** for the selected room
-- On-plan measurement badge on selected rooms
-
-### Edit rooms & floors
-- **Floor** picker — wood, bathroom/tile, kitchen, balcony/stone, plain (per selected room)
-- **Add room** — choose preset (bedroom, hall, utility, bathroom, living, kitchen, other), click corners, **Finish room** or close on first point; live **m²** while drawing
-- **Edit vertices** — drag corners; click edge to **add vertex**; **Delete vertex** or Backspace
-- **Undo** / **Ctrl+Z** — undo **add room** and **delete vertex**
-
-### Furniture
-- Click to select, drag to move, keyboard nudge/rotate
-- Replace from catalog dropdown
-- **Export JSON** / **Export corrected JSON**
-
-### Optional integrations
-- **Supabase** — upload plan raster (set `VITE_SUPABASE_*` in `.env`)
-- Health check: `GET /api/health`
-
-## Configuration (`.env`)
-
-```env
-FIREWORKS_API_KEY=your_key
-FIREWORKS_API_KEY_FALLBACK=optional_fallback_key
-FIREWORKS_MODEL=accounts/fireworks/models/kimi-k2p6
-FIREWORKS_READ_TIMEOUT=3600
+```mermaid
+flowchart LR
+  upload[Upload image]
+  store[Cloudinary or Supabase Storage]
+  api[Analyze API]
+  vision[Vision model structured output]
+  client[Vanilla JS viewer]
+  upload --> store
+  store --> api
+  api --> vision
+  vision --> client
+  client --> svg[SVG polygons]
+  client --> tooltip[Tooltip]
 ```
 
-Never commit `.env` (gitignored).
+v1 focuses on **rooms**; the editable **furniture** layer is composed when `furniture` / `furniture_catalog` exist in JSON. Use **Export JSON** after moving/replacing furniture to download the current edited analysis.
 
-## How to set scale (important)
-
-1. Click **Set scale**
-2. Click **start** and **end** of a known distance on the plan (e.g. a labeled wall)
-3. Enter the real length in **Length (m)** → **Apply scale**
-4. Confirm the green **Scale:** line shows `1 px ≈ … mm`
-5. Use **Measure** and **Add room** for distances and areas in meters
-
-## Project layout
+## Layout (plan)
 
 | Path | Role |
 |------|------|
-| `app.py` | Flask server + `/api/analyze` (Fireworks vision) |
-| `src/viewer/floorPlanViewer.js` | Main UI, tools, undo, pan/zoom |
-| `src/viewer/planTools.js` | Scale, measure, room presets, area math |
-| `src/viewer/svgRenderer.js` | SVG rooms, walls, furniture, overlays |
-| `src/viewer/toolbar.js` | Toolbar controls |
-| `src/lib/calibration.js` | Meters per pixel, area in m² |
-| `src/lib/undoStack.js` | Undo for add room / delete vertex |
-| `public/fixtures/` | Sample plans and JSON |
+| [`src/main.js`](src/main.js) | Bootstrap |
+| [`src/viewer/floorPlanViewer.js`](src/viewer/floorPlanViewer.js) | State, pan/zoom, ray-cast hover |
+| [`src/viewer/roomOverlay.js`](src/viewer/roomOverlay.js) | Room polygons |
+| [`src/viewer/furnitureLayer.js`](src/viewer/furnitureLayer.js) | Phase 2 sprites |
+| [`src/viewer/tooltip.js`](src/viewer/tooltip.js) | Tooltip copy |
+| [`src/viewer/toolbar.js`](src/viewer/toolbar.js) | Toolbar UI |
+| [`src/upload/uploadDropzone.js`](src/upload/uploadDropzone.js) | File input wiring |
+| [`src/lib/coordinates.js`](src/lib/coordinates.js) | Letterbox → normalized |
+| [`src/lib/geometry.js`](src/lib/geometry.js) | `pointInPolygon`, bbox |
+| [`src/services/supabase.js`](src/services/supabase.js) | Storage upload (optional) |
+| [`supabase/migrations/`](supabase/migrations/) | `furniture_catalog`, `floor_plans` |
+
+Copy [`.env.example`](.env.example) to `.env` to show **Upload plan (Supabase)** (requires bucket `floor-plans`). **Cloudinary** can stay optional (see migration `002`).
+
+## Local vision (LM Studio)
+
+After **Open image**, the app calls your model automatically if env is set.
+
+1. Start LM Studio with the OpenAI-compatible server (use the URL it shows, e.g. `http://10.212.228.25:1234`).
+2. Run `npm start` from the workspace root or from this folder. The Flask app serves both the UI and `/api/analyze` on `http://127.0.0.1:5173`.
+3. **Model and base URL** are read from [`lm_studio.json`](lm_studio.json) (and optional gitignored `lm_studio.local.json`) first, then from `LM_STUDIO_URL` / `LM_STUDIO_MODEL` if a key is missing in those files. That way an old `set LM_STUDIO_MODEL=...` in your shell cannot override the project after you edit the JSON. The toolbar also shows the model name the server is using.
+
+If LM Studio returns **"Model does not support images"**, switch `lm_studio_model` to a **vision / multimodal** model in LM Studio (for example one that explicitly accepts image input there). `qwen/qwen3.5-9b` may be text-only depending on how it is loaded.
+
+```bash
+set LM_STUDIO_URL=http://10.212.228.25:1234/v1
+set LM_STUDIO_MODEL=qwen/qwen3.5-9b
+npm run analyze-server
+```
+
+Then set `VITE_ANALYZE_API=http://127.0.0.1:8787` in `.env.local` and **remove or comment out** `VITE_LM_STUDIO_URL` so the app uses the proxy.
+
+Use **Analyze LLM** to re-run extraction on the current file without re-uploading.
+
+## Analyze API (optional)
+
+Not required for the static fixture UI. To hook LM Studio locally:
+
+```bash
+npm run analyze-server
+```
+
+See [`server.mjs`](server.mjs) / [`app.py`](app.py).
 
 ## Build
 
 ```bash
 npm run build
-python app.py
+npm run preview
 ```
-
-## License
-
-See repository root.
