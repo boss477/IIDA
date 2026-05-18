@@ -24,8 +24,15 @@ ANALYZE_USER_TEXT = (
     "NOT room edges), room floor polygons for every visible bounded space including closets/laundry/mech, "
     "windows on exterior walls, room labels with dimensionsText when printed on the plan, calibration "
     "segments for horizontal width and vertical height when dimensions are printed, and furniture. "
+    "Trace room polygons along inner wall corners with multiple vertices per room—avoid 4-point bounding boxes. "
     "Preserve exact aspect ratio and stepped/angled geometry. Output one compact valid JSON object only "
     "(no trailing commas, no markdown)."
+)
+
+REFINE_BOX_ROOMS_TEXT = (
+    "REFINEMENT: Your previous output used too many 4-corner rectangular room polygons. "
+    "Re-output the complete JSON. For each room, trace the inner wall boundary with enough vertices "
+    "(usually 6–12+) to capture corners, L-shapes, and recesses. Minimize rooms that have only 4 points."
 )
 
 FIREWORKS_API_BASE = "https://api.fireworks.ai/inference/v1"
@@ -44,12 +51,14 @@ def _load_env_file() -> None:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if key:
             os.environ[key] = value
 
 
 _load_env_file()
-VISION_READ_TIMEOUT = int(os.environ.get("FIREWORKS_READ_TIMEOUT", "3600"))
+VISION_READ_TIMEOUT = max(
+    60, int(os.environ.get("FIREWORKS_READ_TIMEOUT", "7200"))
+)
 FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY", "").strip()
 FIREWORKS_API_KEY_FALLBACK = os.environ.get("FIREWORKS_API_KEY_FALLBACK", "").strip()
 FIREWORKS_MODEL = os.environ.get(
@@ -80,6 +89,8 @@ WALLS - most important field:
 ROOMS:
 - rooms[].polygon traces the floor area INSIDE the walls (not the wall centerlines).
 - Include every labeled or visibly bounded space: bedrooms, living, kitchen, balcony, baths, walk-in closets, closet, laundry, mech, hall/corridor, and any small storage rooms.
+- CRITICAL: Do NOT output rectangular bounding boxes. Each room polygon needs enough vertices to follow the real wall shape (typically 6–12+ points for non-rectangular rooms).
+- Only use exactly 4 polygon points for a room if it is a perfect axis-aligned rectangle with no recesses; otherwise add vertices at every corner, jog, and step.
 - If a room has an angled or stepped boundary, include those vertices in order instead of approximating with a bounding box.
 - rooms[].flooring: "wood" for bedrooms/living/dining/halls, "tile" for bathrooms/wet areas, "plain" for kitchens/utility, "stone" for balconies/patios.
 - rooms[].labelPoint: {x,y} near visual center of room.
@@ -406,23 +417,34 @@ def _shell_aspect_ratio(walls: list) -> float | None:
     return bw / bh
 
 
-def validate_analysis(data: dict, image_width: int, image_height: int) -> str | None:
-    errors: list[str] = []
+def _count_box_rooms(data: dict) -> tuple[int, int]:
+    rooms = data.get("rooms") or []
+    box = sum(
+        1
+        for r in rooms
+        if isinstance(r, dict) and len(r.get("polygon") or []) == 4
+    )
+    return box, len(rooms)
+
+
+def validate_analysis(data: dict, image_width: int, image_height: int) -> dict:
+    warnings: list[str] = []
+    blocking: str | None = None
     rooms = data.get("rooms") or []
     walls = data.get("walls") or []
 
     if not walls:
-        errors.append(
-            "walls[] is empty — structural walls are required (wall layer will not be drawn)."
+        blocking = (
+            "walls[] is empty — structural walls are required (wall layer will not be drawn). "
+            "Re-analyze or add walls in JSON."
         )
 
-    if len(rooms) > 3:
-        box_rooms = [r for r in rooms if isinstance(r, dict) and len(r.get("polygon") or []) == 4]
-        if box_rooms:
-            errors.append(
-                f"{len(box_rooms)} room(s) have only 4 polygon points (likely bounding boxes, not traced shapes). "
-                "Re-analyze or edit vertices."
-            )
+    box_count, room_count = _count_box_rooms(data)
+    if room_count > 3 and box_count > 0:
+        warnings.append(
+            f"{box_count} room(s) have only 4 polygon points (likely bounding boxes). "
+            "Use Edit vertices to refine, or re-analyze."
+        )
 
     if image_width > 0 and image_height > 0 and walls:
         shell_ar = _shell_aspect_ratio(walls)
@@ -430,12 +452,19 @@ def validate_analysis(data: dict, image_width: int, image_height: int) -> str | 
             img_ar = image_width / image_height
             rel_diff = abs(shell_ar - img_ar) / max(img_ar, 1e-6)
             if rel_diff > 0.4:
-                errors.append(
+                warnings.append(
                     f"Shell aspect ratio ({shell_ar:.2f}) differs from image ({img_ar:.2f}) by "
-                    f"{round(rel_diff * 100)}% — coordinates may be cropped or wrong."
+                    f"{round(rel_diff * 100)}% — check scale or re-analyze."
                 )
 
-    return " ".join(errors) if errors else None
+    return {"blocking": blocking, "warnings": warnings}
+
+
+def _should_refine_box_rooms(data: dict) -> bool:
+    box_count, room_count = _count_box_rooms(data)
+    if room_count < 4:
+        return False
+    return box_count >= 5 or (room_count > 0 and box_count / room_count >= 0.35)
 
 
 def b64_image_size(b64: str) -> tuple[int, int]:
@@ -474,12 +503,17 @@ def _fireworks_should_try_next_key(status: int) -> bool:
     return status in (401, 403, 429) or status >= 500
 
 
-def analyze_with_fireworks(image_b64: str, mime: str) -> str:
+def analyze_with_fireworks(
+    image_b64: str, mime: str, extra_user_text: str | None = None
+) -> str:
     keys = fireworks_api_keys()
     if not keys:
         raise ValueError(
             "FIREWORKS_API_KEY or FIREWORKS_API_KEY_FALLBACK is not set. Add to floor-plan-viewer/.env"
         )
+    user_text = ANALYZE_USER_TEXT
+    if extra_user_text:
+        user_text = user_text + "\n\n" + extra_user_text
     body = {
         "model": FIREWORKS_MODEL,
         "messages": [
@@ -487,7 +521,7 @@ def analyze_with_fireworks(image_b64: str, mime: str) -> str:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": ANALYZE_USER_TEXT},
+                    {"type": "text", "text": user_text},
                     {
                         "type": "image_url",
                         "image_url": {
@@ -636,12 +670,39 @@ def analyze():
         mime = payload.get("mimeType") or "image/png"
         txt = analyze_with_fireworks(b64, mime)
         parsed = parse_response(txt)
-        validation_err = validate_analysis(parsed, img_w, img_h)
-        if validation_err:
-            raise ValueError(validation_err)
+        if _should_refine_box_rooms(parsed):
+            try:
+                txt2 = analyze_with_fireworks(b64, mime, REFINE_BOX_ROOMS_TEXT)
+                parsed2 = parse_response(txt2)
+                box1, _ = _count_box_rooms(parsed)
+                box2, _ = _count_box_rooms(parsed2)
+                if box2 < box1:
+                    parsed = parsed2
+            except (ValueError, requests.RequestException):
+                pass
+
+        validation = validate_analysis(parsed, img_w, img_h)
+        if validation.get("blocking"):
+            raise ValueError(validation["blocking"])
+        warnings = validation.get("warnings") or []
+        if warnings:
+            parsed = dict(parsed)
+            parsed["_validationWarnings"] = warnings
         return jsonify(parsed)
     except ValueError as e:
         return jsonify({"error": str(e)}), 502
+    except requests.Timeout as e:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"Fireworks API timed out (read timeout={VISION_READ_TIMEOUT}s). "
+                        f"Increase FIREWORKS_READ_TIMEOUT in .env (e.g. 7200 or 10800) and restart the server."
+                    )
+                }
+            ),
+            504,
+        )
     except requests.RequestException as e:
         return jsonify({"error": f"Fireworks API error: {e}"}), 502
     except Exception as e:
@@ -679,4 +740,5 @@ if __name__ == "__main__":
         )
     else:
         print("Fireworks API key: MISSING — set FIREWORKS_API_KEY in .env")
-    app.run(host="127.0.0.1", port=port, debug=False)
+    print(f"Fireworks read timeout: {VISION_READ_TIMEOUT}s (FIREWORKS_READ_TIMEOUT in .env)")
+    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

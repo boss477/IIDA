@@ -26,6 +26,8 @@ export var VISION_SYSTEM_PROMPT = [
   "ROOMS:",
   "- rooms[].polygon traces the floor area INSIDE the walls (not the wall centerlines).",
   "- Include every labeled or visibly bounded space: bedrooms, living, kitchen, balcony, baths, walk-in closets, closet, laundry, mech, hall/corridor, and any small storage rooms.",
+  "- CRITICAL: Do NOT output rectangular bounding boxes. Use enough vertices per room to follow inner wall corners (typically 6–12+ for non-rectangular rooms).",
+  "- Only use exactly 4 polygon points when the room is a perfect axis-aligned rectangle with no recesses.",
   "- If a room has an angled or stepped boundary, include those vertices in order instead of approximating with a bounding box.",
   "- rooms[].flooring: \"wood\" for bedrooms/living/dining/halls, \"tile\" for bathrooms/wet areas, \"plain\" for kitchens/utility, \"stone\" for balconies/patios.",
   "- rooms[].labelPoint: {x,y} near visual center of room.",
@@ -44,4 +46,4 @@ export var VISION_SYSTEM_PROMPT = [
 ].join("\n");
 
 export var VISION_USER_TEXT =
-  "Extract structural walls (outer shell + interior partitions as centerlines with thickness, NOT room edges), room floor polygons for every visible bounded space including closets/laundry/mech, windows on exterior walls, room labels with dimensionsText when printed, calibration segments for horizontal width and vertical height when dimensions are printed, and furniture. Preserve exact aspect ratio and stepped/angled geometry. Output one compact valid JSON object only.";
+  "Extract structural walls (outer shell + interior partitions as centerlines with thickness, NOT room edges), room floor polygons for every visible bounded space including closets/laundry/mech, windows on exterior walls, room labels with dimensionsText when printed, calibration segments for horizontal width and vertical height when dimensions are printed, and furniture. Trace room polygons along inner wall corners with multiple vertices—avoid 4-point bounding boxes. Preserve exact aspect ratio and stepped/angled geometry. Output one compact valid JSON object only.";

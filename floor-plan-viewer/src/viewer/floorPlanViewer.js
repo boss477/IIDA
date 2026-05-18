@@ -674,14 +674,21 @@ export function initFloorPlanViewer() {
 
   function applyAnalysisFromObject(nextData, options) {
     options = options || {};
+    var validationWarnings = nextData._validationWarnings;
+    if (validationWarnings) {
+      delete nextData._validationWarnings;
+    }
     if (options.validate && plan.naturalWidth && plan.naturalHeight) {
-      var validationErr = validateAnalysis(
+      var validation = validateAnalysis(
         nextData,
         plan.naturalWidth,
         plan.naturalHeight
       );
-      if (validationErr) {
-        throw new Error(validationErr);
+      if (validation.blocking) {
+        throw new Error(validation.blocking);
+      }
+      if (validation.warnings && validation.warnings.length) {
+        validationWarnings = (validationWarnings || []).concat(validation.warnings);
       }
     }
     data = Object.assign(
@@ -721,6 +728,11 @@ export function initFloorPlanViewer() {
     syncFloorSelect();
     syncRoomMeasureReadout();
     refreshCalibration();
+    if (validationWarnings && validationWarnings.length) {
+      wallWarnEl.textContent = validationWarnings.join(" ");
+    } else {
+      wallWarnEl.textContent = "";
+    }
     render();
   }
 
@@ -728,12 +740,15 @@ export function initFloorPlanViewer() {
     setLlmStatus("LLM: reading image...");
     fileToImageBase64(file)
       .then(function (img) {
-        setLlmStatus("LLM: analyzing with Fireworks...");
+        setLlmStatus("LLM: analyzing with Fireworks (may take several minutes)...");
         return analyzeFloorPlan(img.imageBase64, img.mimeType);
       })
       .then(function (analysis) {
         applyAnalysisFromObject(analysis, { validate: true });
-        setLlmStatus("LLM: analysis loaded");
+        var warn = wallWarnEl.textContent
+          ? " (warnings — see yellow banner; use Edit vertices)"
+          : "";
+        setLlmStatus("LLM: analysis loaded" + warn);
       })
       .catch(function (err) {
         var msg = err && err.message ? err.message : String(err);

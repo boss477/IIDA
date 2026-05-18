@@ -28,29 +28,39 @@ export function shellAspectRatio(walls) {
 
 /**
  * @param {object} data normalized analysis
+ * @returns {{ boxCount: number, roomCount: number }}
+ */
+export function countBoxRooms(data) {
+  var rooms = data.rooms || [];
+  var boxCount = rooms.filter(function (r) {
+    return r.polygon && r.polygon.length === 4;
+  }).length;
+  return { boxCount: boxCount, roomCount: rooms.length };
+}
+
+/**
+ * @param {object} data normalized analysis
  * @param {number} imageWidth natural pixels
  * @param {number} imageHeight natural pixels
- * @returns {string|null} error message or null if valid
+ * @returns {{ blocking: string|null, warnings: string[] }}
  */
 export function validateAnalysis(data, imageWidth, imageHeight) {
-  var errors = [];
+  var warnings = [];
+  var blocking = null;
   var rooms = data.rooms || [];
   var walls = data.walls || [];
 
   if (!walls.length) {
-    errors.push("walls[] is empty — structural walls are required (wall layer will not be drawn).");
+    blocking =
+      "walls[] is empty — structural walls are required (wall layer will not be drawn). Re-analyze or add walls in JSON.";
   }
 
-  if (rooms.length > 3) {
-    var boxRooms = rooms.filter(function (r) {
-      return r.polygon && r.polygon.length === 4;
-    });
-    if (boxRooms.length > 0) {
-      errors.push(
-        boxRooms.length +
-          " room(s) have only 4 polygon points (likely bounding boxes, not traced shapes). Re-analyze or edit vertices."
-      );
-    }
+  var boxInfo = countBoxRooms(data);
+  if (boxInfo.roomCount > 3 && boxInfo.boxCount > 0) {
+    warnings.push(
+      boxInfo.boxCount +
+        " room(s) have only 4 polygon points (likely bounding boxes). Use Edit vertices or Add room to refine, or re-analyze."
+    );
   }
 
   if (imageWidth > 0 && imageHeight > 0 && walls.length) {
@@ -59,18 +69,25 @@ export function validateAnalysis(data, imageWidth, imageHeight) {
       var imgAr = imageWidth / imageHeight;
       var relDiff = Math.abs(shellAr - imgAr) / Math.max(imgAr, 1e-6);
       if (relDiff > 0.4) {
-        errors.push(
+        warnings.push(
           "Shell aspect ratio (" +
             shellAr.toFixed(2) +
             ") differs from image (" +
             imgAr.toFixed(2) +
             ") by " +
             Math.round(relDiff * 100) +
-            "% — coordinates may be cropped or wrong."
+            "% — check scale or re-analyze."
         );
       }
     }
   }
 
-  return errors.length ? errors.join(" ") : null;
+  return { blocking: blocking, warnings: warnings };
+}
+
+/** @deprecated use validateAnalysis().blocking */
+export function validateAnalysisMessage(data, imageWidth, imageHeight) {
+  var r = validateAnalysis(data, imageWidth, imageHeight);
+  if (r.blocking) return r.blocking;
+  return r.warnings.length ? r.warnings.join(" ") : null;
 }
