@@ -8,7 +8,13 @@ function svgEl(tag) {
 function setAttrs(el, attrs) {
   Object.keys(attrs).forEach(function (key) {
     var value = attrs[key];
-    if (value !== undefined && value !== null) el.setAttribute(key, String(value));
+    if (value !== undefined && value !== null) {
+      if (key === "textContent") {
+        el.textContent = String(value);
+      } else {
+        el.setAttribute(key, String(value));
+      }
+    }
   });
   return el;
 }
@@ -157,12 +163,25 @@ export function renderMeasureOverlay(svg, measure, size, draftSegment) {
   svg.appendChild(g);
 }
 
-export function renderDrawRoomOverlay(svg, points, cursor, areaLabel, size) {
+export function renderDrawRoomOverlay(
+  svg,
+  points,
+  cursor,
+  areaLabel,
+  size,
+  layerClass,
+  lineClass,
+  dotClass
+) {
   if (!points || !points.length) return;
-  var g = setAttrs(svgEl("g"), { class: "plan-draw-room-layer", "pointer-events": "none" });
+  layerClass = layerClass || "plan-draw-room-layer";
+  lineClass = lineClass || "plan-draw-room-line";
+  dotClass = dotClass || "plan-draw-room-dot";
+  var g = setAttrs(svgEl("g"), { class: layerClass, "pointer-events": "none" });
   var pts = points.map(function (p) {
     return normToPx(p, size);
   });
+  var cursorPx = cursor ? normToPx(cursor, size) : null;
 
   if (pts.length >= 2) {
     var openPts = pts
@@ -170,10 +189,10 @@ export function renderDrawRoomOverlay(svg, points, cursor, areaLabel, size) {
         return p.x + "," + p.y;
       })
       .join(" ");
-    if (cursor) openPts += " " + cursor.x + "," + cursor.y;
+    if (cursorPx) openPts += " " + cursorPx.x + "," + cursorPx.y;
     g.appendChild(
       setAttrs(svgEl("polyline"), {
-        class: "plan-draw-room-line",
+        class: lineClass,
         points: openPts,
         fill: "none",
       })
@@ -182,7 +201,7 @@ export function renderDrawRoomOverlay(svg, points, cursor, areaLabel, size) {
   if (pts.length >= 3) {
     g.appendChild(
       setAttrs(svgEl("polygon"), {
-        class: "plan-draw-room-fill",
+        class: lineClass + "-fill",
         points: pts
           .map(function (p) {
             return p.x + "," + p.y;
@@ -197,22 +216,22 @@ export function renderDrawRoomOverlay(svg, points, cursor, areaLabel, size) {
         cx: p.x,
         cy: p.y,
         r: i === 0 ? 7 : 5,
-        class: "plan-draw-room-dot" + (i === 0 ? " plan-draw-room-dot-first" : ""),
+        class: dotClass + (i === 0 ? " " + dotClass + "-first" : ""),
       })
     );
   });
-  if (cursor && pts.length) {
+  if (cursorPx && pts.length) {
     g.appendChild(
       setAttrs(svgEl("circle"), {
-        cx: cursor.x,
-        cy: cursor.y,
+        cx: cursorPx.x,
+        cy: cursorPx.y,
         r: 4,
-        class: "plan-draw-room-dot plan-draw-room-dot-cursor",
+        class: dotClass + " " + dotClass + "-cursor",
       })
     );
   }
   if (areaLabel && pts.length >= 2) {
-    var anchor = cursor || pts[pts.length - 1];
+    var anchor = cursorPx || pts[pts.length - 1];
     g.appendChild(
       setAttrs(svgEl("text"), {
         x: anchor.x + 10,
@@ -231,8 +250,9 @@ export function renderRoomMeasurementBadge(svg, room, areaLabel, dimLabel, size)
   var px = c.x * size.width;
   var py = c.y * size.height;
   var g = setAttrs(svgEl("g"), { class: "plan-room-measure-badge", "pointer-events": "none" });
-  var lines = [areaLabel];
+  var lines = [];
   if (dimLabel) lines.push(dimLabel);
+  if (areaLabel) lines.push(areaLabel);
   var lineH = 14;
   var padY = 6;
   var w = Math.max(72, Math.max.apply(null, lines.map(function (l) { return l.length * 6.5; })));
@@ -244,6 +264,9 @@ export function renderRoomMeasurementBadge(svg, room, areaLabel, dimLabel, size)
       width: w,
       height: h,
       rx: 4,
+      fill: "#ffffff",
+      stroke: "rgba(30, 27, 24, 0.2)",
+      "stroke-width": 1,
       class: "plan-room-measure-badge-bg",
     })
   );
@@ -274,6 +297,39 @@ export function renderSelectedRoomOutline(svg, rooms, selectedRoomId, size) {
       fill: "none",
     })
   );
+}
+
+export function renderSelectedWallHighlight(svg, wall, size) {
+  if (!wall || !wall.points || wall.points.length < 2) return;
+  svg.appendChild(
+    setAttrs(svgEl("polyline"), {
+      class: "plan-wall-selected",
+      points: pointsAttr(wall.points, size.width, size.height),
+      fill: "none",
+    })
+  );
+}
+
+export function renderWallVertexHandles(svg, wall, size, selectedVertex) {
+  if (!wall || !wall.points) return;
+  var wallId = wall.id || "";
+  wall.points.forEach(function (p, i) {
+    var isSel =
+      selectedVertex && selectedVertex.wallId === wallId && selectedVertex.index === i;
+    svg.appendChild(
+      setAttrs(svgEl("circle"), {
+        class: "plan-wall-vertex-handle",
+        "data-wall-id": wallId,
+        "data-vertex-index": String(i),
+        cx: p.x * size.width,
+        cy: p.y * size.height,
+        r: isSel ? 8 : 6,
+        fill: isSel ? "#1565c0" : "#1976d2",
+        stroke: "#ffffff",
+        "stroke-width": 2,
+      })
+    );
+  });
 }
 
 export function renderVertexHandles(svg, rooms, size, selectedVertex) {

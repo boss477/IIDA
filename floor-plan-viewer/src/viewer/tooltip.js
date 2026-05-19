@@ -6,15 +6,13 @@
  */
 export function showRoomTooltip(tipEl, e, room, opts) {
   opts = opts || {};
-  var dimStr = room.dimensions || room.dimensionsText;
+  var dimStr = opts.dimLine || room.dimensions || room.dimensionsText;
   var dim = dimStr ? " — " + dimStr : "";
-  var area =
-    room.areaSqFt != null ? "<br/>Area: ~" + room.areaSqFt + " sq ft" : "";
-  if (opts.areaSqM != null && opts.areaSqM > 0) {
-    area +=
-      "<br/><span class=\"tip-cal\">Polygon (calibrated): ~" +
-      opts.areaSqM.toFixed(2) +
-      " m²</span>";
+  var area = "";
+  if (opts.areaLine) {
+    area += "<br/>Area: " + opts.areaLine;
+  } else if (room.areaSqFt != null) {
+    area += "<br/>Area: ~" + room.areaSqFt + " sq ft";
   }
   if (opts.scaleSummary) {
     area += "<br/><span class=\"tip-cal-sub\">" + opts.scaleSummary + "</span>";

@@ -50,9 +50,30 @@ body {
 .plan-wrap.tool-crosshair {
   cursor: crosshair;
 }
-#overlay .plan-vertex-handle {
+#overlay .plan-vertex-handle,
+#overlay .plan-wall-vertex-handle {
   pointer-events: auto;
   cursor: grab;
+}
+#overlay .plan-wall-vertex-handle:active {
+  cursor: grabbing;
+}
+#overlay .plan-wall-selected {
+  fill: none;
+  stroke: #1565c0;
+  stroke-width: 5;
+  stroke-dasharray: 8 4;
+  pointer-events: none;
+}
+#overlay .plan-draw-wall-line {
+  stroke: #1565c0;
+  stroke-width: 2.5;
+  stroke-dasharray: 6 4;
+}
+#overlay .plan-draw-wall-dot {
+  fill: #1565c0;
+  stroke: #ffffff;
+  stroke-width: 1.5;
 }
 #overlay .plan-calibration-line {
   stroke: #0d9488;
@@ -83,6 +104,16 @@ body {
   font-size: 13px;
   font-weight: 600;
   fill: #1e3a8a;
+}
+#overlay .plan-room-measure-badge-bg {
+  fill: #ffffff;
+  stroke: rgba(30, 27, 24, 0.2);
+  stroke-width: 1;
+}
+#overlay .plan-room-measure-badge-text {
+  fill: #1e1b18;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
 }
 #overlay .plan-room-selected {
   stroke: #ea580c;
@@ -151,7 +182,8 @@ button:hover {
   height: calc(100vh - 140px);
   padding: 12px;
 }
-#viewport {
+#viewport,
+#viewport3d {
   width: 100%;
   height: 100%;
   overflow: hidden;
@@ -175,7 +207,7 @@ button:hover {
   border-radius: 8px;
 }
 #plan {
-  display: none;
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -184,13 +216,21 @@ button:hover {
 }
 #overlay {
   position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   overflow: visible;
   pointer-events: none;
-  background: #fff;
+  background: transparent;
   border-radius: 6px;
 }
 #overlay .plan-bg {
-  fill: #fff;
+  fill: none;
+}
+#overlay .plan-room-bg,
+#overlay .plan-room-fill {
+  opacity: 0.45;
 }
 #overlay .plan-room-fill {
   stroke: rgba(30, 27, 24, 0.18);
@@ -223,6 +263,14 @@ button:hover {
 #overlay .plan-label-dims {
   font-size: 10px;
   font-weight: 600;
+}
+#overlay .plan-label-area {
+  font-size: 9px;
+  font-weight: 500;
+}
+#tip .tip-dim {
+  font-weight: 600;
+  color: #334155;
 }
 #overlay .hi {
   fill: var(--hi);

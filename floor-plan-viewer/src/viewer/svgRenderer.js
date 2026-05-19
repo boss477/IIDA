@@ -2,14 +2,17 @@
 // Renders the analyzed floor plan as vector geometry: textured floors, walls,
 // doors, furniture, labels, and hover-compatible room overlays.
 
-import { parseSofaParams } from "../lib/catalogSizing.js";
+import { parseSofaParams, furnitureNormDimensions } from "../lib/catalogSizing.js";
+import { getRoomMeasurementDisplay, wallSourceFromRooms } from "./planTools.js";
 import {
   renderCalibrationOverlays,
   renderDrawRoomOverlay,
   renderMeasureOverlay,
   renderRoomMeasurementBadge,
   renderSelectedRoomOutline,
+  renderSelectedWallHighlight,
   renderVertexHandles,
+  renderWallVertexHandles,
 } from "./geometryOverlays.js";
 import { getSofaPalette } from "../lib/sofaColors.js";
 
@@ -22,7 +25,13 @@ function svgEl(tag) {
 function setAttrs(el, attrs) {
   Object.keys(attrs).forEach(function (key) {
     var value = attrs[key];
-    if (value !== undefined && value !== null) el.setAttribute(key, String(value));
+    if (value !== undefined && value !== null) {
+      if (key === "textContent") {
+        el.textContent = String(value);
+      } else {
+        el.setAttribute(key, String(value));
+      }
+    }
   });
   return el;
 }
@@ -184,20 +193,6 @@ function polygonCentroid(points) {
   return { x: cx / (6 * area), y: cy / (6 * area) };
 }
 
-function wallSourceFromRooms(rooms) {
-  return (rooms || [])
-    .filter(function (r) {
-      return r.polygon && r.polygon.length >= 3;
-    })
-    .map(function (r) {
-      return {
-        id: "wall-from-" + (r.id || r.name || Math.random()),
-        points: r.polygon.concat([r.polygon[0]]),
-        thickness: 0.006,
-      };
-    });
-}
-
 function catalogById(catalog, id) {
   if (!catalog || !id) return null;
   for (var i = 0; i < catalog.length; i++) {
@@ -206,8 +201,35 @@ function catalogById(catalog, id) {
   return null;
 }
 
-function renderBackground(svg, size) {
-  svg.appendChild(setAttrs(svgEl("rect"), { class: "plan-bg", x: 0, y: 0, width: size.width, height: size.height, fill: "#ffffff" }));
+function renderBackground(svg, size, planImageSrc) {
+  var bgGroup = svgEl("g");
+  bgGroup.setAttribute("class", "plan-bg-group");
+  svg.appendChild(bgGroup);
+
+  bgGroup.appendChild(
+    setAttrs(svgEl("rect"), {
+      class: "plan-bg",
+      x: 0,
+      y: 0,
+      width: size.width,
+      height: size.height,
+      fill: "#ffffff",
+    })
+  );
+
+  if (planImageSrc) {
+    bgGroup.appendChild(
+      setAttrs(svgEl("image"), {
+        href: planImageSrc,
+        x: 0,
+        y: 0,
+        width: size.width,
+        height: size.height,
+        preserveAspectRatio: "none",
+        opacity: "0.5"
+      })
+    );
+  }
 }
 
 function renderTexturedFills(svg, rooms, activeRoomId, size) {
@@ -215,7 +237,7 @@ function renderTexturedFills(svg, rooms, activeRoomId, size) {
     if (!room.polygon || room.polygon.length < 3) return;
     var pts = pointsAttr(room.polygon, size.width, size.height);
 
-    svg.appendChild(setAttrs(svgEl("polygon"), { points: pts, fill: baseColorForRoom(room), stroke: "none" }));
+    svg.appendChild(setAttrs(svgEl("polygon"), { class: "plan-room-bg", points: pts, fill: baseColorForRoom(room), stroke: "none" }));
     svg.appendChild(
       setAttrs(svgEl("polygon"), {
         class: "plan-room-fill",
@@ -397,12 +419,16 @@ function renderDoorArcs(svg, doors, size) {
 }
 
 function renderWalls(svg, walls, rooms, size) {
-  var source = walls && walls.length ? walls : wallSourceFromRooms(rooms);
+  var fromRooms = wallSourceFromRooms(rooms);
+  var source = (walls && walls.length) ? walls : fromRooms;
   var unit = Math.min(size.width, size.height);
   source.forEach(function (wall, idx) {
     if (!wall.points || wall.points.length < 2) return;
     var pts = pointsAttr(wall.points, size.width, size.height);
-    var thickness = Math.max(5, (wall.thickness || 0.007) * unit);
+    var tNorm = wall.thickness != null ? wall.thickness : 0.007;
+    if (!isFinite(tNorm)) tNorm = 0.007;
+    tNorm = Math.min(0.05, Math.max(0.001, tNorm));
+    var thickness = Math.max(5, tNorm * unit);
 
     svg.appendChild(
       setAttrs(svgEl("polyline"), {
@@ -439,15 +465,31 @@ function furnitureRotation(item) {
   return item.rotationDeg != null ? item.rotationDeg : item.rotation || 0;
 }
 
-function furnitureSize(item, size) {
-  var scale = item.scale != null ? item.scale : 0.06;
-  return {
-    w: (item.width || scale) * size.width,
-    h: (item.height || item.depth || scale) * size.height,
+function furnitureSize(item, size, renderCtx) {
+  renderCtx = renderCtx || {};
+  var catalog = renderCtx.furnitureCatalog || [];
+  var row = catalogById(catalog, item.catalogId);
+  var ctx = {
+    mmPerPixel: renderCtx.mmPerPixel,
+    planWidthPx: renderCtx.planWidthPx != null ? renderCtx.planWidthPx : size.width,
+    planHeightPx: renderCtx.planHeightPx != null ? renderCtx.planHeightPx : size.height,
   };
+  var dims = furnitureNormDimensions(item, row, ctx);
+  if (!dims && (item.catalogWidthMm != null || item.catalogDepthMm != null)) {
+    dims = furnitureNormDimensions(
+      item,
+      { width_mm: item.catalogWidthMm, depth_mm: item.catalogDepthMm },
+      ctx
+    );
+  }
+  if (dims) {
+    return { w: dims.wNorm * size.width, h: dims.hNorm * size.height };
+  }
+  var placeholder = 0.035;
+  return { w: placeholder * size.width, h: placeholder * size.height };
 }
 
-function renderDetailedFurniture(svg, furniture, catalog, selectedId, size) {
+function renderDetailedFurniture(svg, furniture, catalog, selectedId, size, renderCtx) {
   (furniture || [])
     .slice()
     .sort(function (a, b) {
@@ -457,7 +499,7 @@ function renderDetailedFurniture(svg, furniture, catalog, selectedId, size) {
       if (item.x == null || item.y == null) return;
       var cx = item.x * size.width;
       var cy = item.y * size.height;
-      var box = furnitureSize(item, size);
+      var box = furnitureSize(item, size, renderCtx);
       var catalogRow = catalogById(catalog || [], item.catalogId);
       var type = furnitureType(item, catalog || []);
       var g = setAttrs(svgEl("g"), {
@@ -645,7 +687,7 @@ function renderRugItem(g, w, h) {
   g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h, fill: "url(#carpet)", stroke: "#e0d8cc", rx: 6 }));
 }
 
-function renderLabels(svg, rooms, size) {
+function renderLabels(svg, rooms, size, calibrationState) {
   (rooms || []).forEach(function (room) {
     if (!room.polygon || room.polygon.length < 3) return;
     var point = room.labelPoint || polygonCentroid(room.polygon);
@@ -666,19 +708,43 @@ function renderLabels(svg, rooms, size) {
     name.textContent = room.name || room.id || "Room";
     g.appendChild(name);
 
-    if (room.dimensionsText || room.dimensions) {
-      var dims = setAttrs(svgEl("text"), {
-        class: "plan-label-dims",
-        "text-anchor": "middle",
-        "dominant-baseline": "middle",
-        dy: "1.5em",
-        "font-family": "Arial, Helvetica, sans-serif",
-        "font-size": 10,
-        "font-weight": 400,
-        fill: "#555555",
-      });
-      dims.textContent = room.dimensionsText || String(room.dimensions);
-      g.appendChild(dims);
+    var measure = getRoomMeasurementDisplay(room, size.width, size.height, calibrationState || null);
+    var dimForLabel = measure.dimLine;
+    var areaForLabel = measure.areaLine;
+    if (dimForLabel && dimForLabel.indexOf(" px") >= 0) dimForLabel = null;
+    if (areaForLabel && areaForLabel.indexOf("px²") >= 0) areaForLabel = null;
+    var line = 0;
+    if (dimForLabel) {
+      line++;
+      g.appendChild(
+        setAttrs(svgEl("text"), {
+          class: "plan-label-dims",
+          "text-anchor": "middle",
+          "dominant-baseline": "middle",
+          dy: 1.35 * line + "em",
+          "font-family": "Arial, Helvetica, sans-serif",
+          "font-size": 10,
+          "font-weight": 500,
+          fill: "#444444",
+          textContent: dimForLabel,
+        })
+      );
+    }
+    if (areaForLabel && areaForLabel !== dimForLabel) {
+      line++;
+      g.appendChild(
+        setAttrs(svgEl("text"), {
+          class: "plan-label-area",
+          "text-anchor": "middle",
+          "dominant-baseline": "middle",
+          dy: 1.35 * line + "em",
+          "font-family": "Arial, Helvetica, sans-serif",
+          "font-size": 9,
+          "font-weight": 400,
+          fill: "#666666",
+          textContent: areaForLabel,
+        })
+      );
     }
 
     svg.appendChild(g);
@@ -722,16 +788,28 @@ function renderHitHighlights(svg, rooms, activeRoomId, size) {
 export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size, options) {
   var opts = options || {};
   svg.innerHTML = "";
-  renderBackground(svg, size);
+  renderBackground(svg, size, opts.planImageSrc);
   createDefs(svg);
   renderTexturedFills(svg, data.rooms || [], activeRoomId, size);
   renderRugs(svg, data.rooms || [], size);
   renderWindows(svg, data.windows || [], size);
   renderDoorArcs(svg, data.doors || [], size);
   renderWalls(svg, data.walls || [], data.rooms || [], size);
-  renderWalkableBoundary(svg, data.rooms || [], size, !!selectedFurnitureId && !opts.vertexEditMode);
-  renderDetailedFurniture(svg, data.furniture || [], data.furniture_catalog || [], selectedFurnitureId, size);
-  renderLabels(svg, data.rooms || [], size);
+  renderWalkableBoundary(
+    svg,
+    data.rooms || [],
+    size,
+    !!selectedFurnitureId && !opts.vertexEditMode && !opts.wallEditMode
+  );
+  renderDetailedFurniture(
+    svg,
+    data.furniture || [],
+    data.furniture_catalog || [],
+    selectedFurnitureId,
+    size,
+    opts.furnitureRenderCtx || null
+  );
+  renderLabels(svg, data.rooms || [], size, opts.calibrationState || null);
   renderSelectedRoomOutline(svg, data.rooms || [], opts.selectedRoomId || null, size);
   if (opts.roomMeasureBadge) {
     renderRoomMeasurementBadge(
@@ -755,6 +833,27 @@ export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size, o
   }
   if (opts.vertexEditMode) {
     renderVertexHandles(svg, data.rooms || [], size, opts.selectedVertex || null);
+  }
+  if (opts.wallEditMode && opts.selectedWallId) {
+    var selWall = (data.walls || []).find(function (w) {
+      return (w.id || "") === opts.selectedWallId;
+    });
+    if (selWall) {
+      renderSelectedWallHighlight(svg, selWall, size);
+      renderWallVertexHandles(svg, selWall, size, opts.selectedWallVertex || null);
+    }
+  }
+  if (opts.drawWallPoints && opts.drawWallPoints.length) {
+    renderDrawRoomOverlay(
+      svg,
+      opts.drawWallPoints,
+      opts.drawWallCursor || null,
+      "",
+      size,
+      "plan-draw-wall-layer",
+      "plan-draw-wall-line",
+      "plan-draw-wall-dot"
+    );
   }
   renderHitHighlights(svg, data.rooms || [], activeRoomId, size);
 }

@@ -29,15 +29,18 @@ export function mountFileToolbar(container, handlers) {
 
   addButton("Load sample JSON", handlers.loadFixture);
   if (handlers.uploadSupabase) addButton("Upload plan (Supabase)", handlers.uploadSupabase);
+  addButton("Save to DB", handlers.saveToDb);
+  addButton("Load from DB", handlers.loadFromDb);
   addButton("+", handlers.zoomIn);
   addButton("−", handlers.zoomOut);
   addButton("Reset", handlers.reset);
   if (handlers.exportJson) addButton("Export JSON", handlers.exportJson);
   if (handlers.analyzeLlm) addButton("Analyze LLM", handlers.analyzeLlm);
-  addButton("Fullscreen", handlers.fullscreen);
+  var b2d = addButton("2D View", handlers.show2D);
+  var b3d = addButton("3D View", handlers.show3D);
 
   container.appendChild(row);
-  return { fileInput: inp, row: row };
+  return { fileInput: inp, row: row, btn2D: b2d, btn3D: b3d };
 }
 
 /**
@@ -69,6 +72,8 @@ export function mountGeometryToolbar(container, handlers) {
   buttons.btnMeasure = addButton("Measure", handlers.toggleMeasure, "btnMeasure");
   buttons.btnVertexEdit = addButton("Edit vertices", handlers.toggleVertexEdit, "btnVertexEdit");
   buttons.btnDrawRoom = addButton("Add room", handlers.toggleDrawRoom, "btnDrawRoom");
+  buttons.btnEditWalls = addButton("Edit walls", handlers.toggleEditWalls, "btnEditWalls");
+  buttons.btnAddWall = addButton("Add wall", handlers.toggleAddWall, "btnAddWall");
 
   var roomPresetSelect = document.createElement("select");
   roomPresetSelect.className = "room-preset-select";
@@ -88,6 +93,22 @@ export function mountGeometryToolbar(container, handlers) {
   finishRoomBtn.hidden = true;
   finishRoomBtn.addEventListener("click", handlers.finishDrawRoom);
   row.appendChild(finishRoomBtn);
+
+  var finishWallBtn = document.createElement("button");
+  finishWallBtn.type = "button";
+  finishWallBtn.textContent = "Finish wall";
+  finishWallBtn.className = "btn finish-wall-btn";
+  finishWallBtn.hidden = true;
+  finishWallBtn.addEventListener("click", handlers.finishDrawWall);
+  row.appendChild(finishWallBtn);
+
+  var deleteWallBtn = document.createElement("button");
+  deleteWallBtn.type = "button";
+  deleteWallBtn.textContent = "Remove wall";
+  deleteWallBtn.className = "btn delete-wall-btn";
+  deleteWallBtn.hidden = true;
+  deleteWallBtn.addEventListener("click", handlers.deleteSelectedWall);
+  row.appendChild(deleteWallBtn);
 
   var deleteVertexBtn = document.createElement("button");
   deleteVertexBtn.type = "button";
@@ -167,8 +188,12 @@ export function mountGeometryToolbar(container, handlers) {
     btnMeasure: buttons.btnMeasure,
     btnVertexEdit: buttons.btnVertexEdit,
     btnDrawRoom: buttons.btnDrawRoom,
+    btnEditWalls: buttons.btnEditWalls,
+    btnAddWall: buttons.btnAddWall,
     roomPresetSelect: roomPresetSelect,
     finishRoomBtn: finishRoomBtn,
+    finishWallBtn: finishWallBtn,
+    deleteWallBtn: deleteWallBtn,
     deleteVertexBtn: deleteVertexBtn,
     btnUndo: btnUndo,
     scaleLengthInput: scaleLengthInput,

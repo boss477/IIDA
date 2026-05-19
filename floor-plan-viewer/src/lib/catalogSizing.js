@@ -1,8 +1,27 @@
 import { snapFurnitureFromWalls } from "./wallSnap.js";
 import { parseSofaColor, sofaColorLabel } from "./sofaColors.js";
 
-/** ~96 DPI at 1:100 when calibration JSON is missing */
+/** Legacy fallback when plan size unknown (avoid tiny icons) */
 export var DEFAULT_MM_PER_PX = 1 / 3.78;
+
+/**
+ * When JSON has no calibration, assume the plan bitmap spans ~12 m across its long edge.
+ * @param {number} planWidthPx
+ * @param {number} planHeightPx
+ */
+export function fallbackMmPerPixel(planWidthPx, planHeightPx) {
+  var spanPx = Math.max(planWidthPx || 0, planHeightPx || 0);
+  if (spanPx < 1) return DEFAULT_MM_PER_PX;
+  var assumedPlanSpanMm = 12000;
+  return assumedPlanSpanMm / spanPx;
+}
+
+export function effectiveMmPerPixel(ctx) {
+  if (ctx && ctx.mmPerPixel != null && ctx.mmPerPixel > 0) return ctx.mmPerPixel;
+  var w = ctx && ctx.planWidthPx > 0 ? ctx.planWidthPx : 1000;
+  var h = ctx && ctx.planHeightPx > 0 ? ctx.planHeightPx : 1000;
+  return fallbackMmPerPixel(w, h);
+}
 
 export function mmToPx(mm, mmPerPixel) {
   if (mm == null || !isFinite(mm)) return null;
@@ -50,10 +69,62 @@ export function parseSofaParams(keywords, productName) {
 
 export function catalogById(catalog, id) {
   if (!catalog || !id) return null;
+  var sid = String(id);
   for (var i = 0; i < catalog.length; i++) {
-    if (String(catalog[i].id) === String(id)) return catalog[i];
+    var row = catalog[i];
+    if (String(row.id) === sid) return row;
+    if (row.product_code && String(row.product_code) === sid) return row;
   }
   return null;
+}
+
+/**
+ * Match furniture to a Shearling row (product_code). LLM ids are ignored unless they match DB.
+ * @param {object} item
+ * @param {Array<object>} catalog
+ * @param {{ autoTypeDefault?: boolean }} opts
+ */
+export function resolveCatalogRowForItem(item, catalog, opts) {
+  if (!item || !catalog || !catalog.length) return null;
+  opts = opts || {};
+  var row = catalogById(catalog, item.catalogId);
+  if (row) return row;
+  if (!opts.autoTypeDefault) return null;
+  var t = String(item.type || item.shape || "").toLowerCase();
+  if (t.indexOf("sofa") >= 0 || t.indexOf("couch") >= 0 || t.indexOf("lounge") >= 0) {
+    return findSofaCatalogRow(catalog, null);
+  }
+  return null;
+}
+
+/**
+ * Normalized width/height from catalog mm only (never LLM width/height/scale).
+ * @returns {{ wNorm: number, hNorm: number }|null}
+ */
+export function furnitureNormDimensions(item, catalogRow, ctx) {
+  if (!catalogRow) return null;
+  var widthMm = catalogRow.width_mm != null ? catalogRow.width_mm : item.catalogWidthMm;
+  var depthMm =
+    catalogRow.depth_mm != null
+      ? catalogRow.depth_mm
+      : catalogRow.length_mm != null
+        ? catalogRow.length_mm
+        : item.catalogDepthMm;
+  if (widthMm == null && depthMm == null) return null;
+
+  var planW = ctx.planWidthPx > 0 ? ctx.planWidthPx : 1000;
+  var planH = ctx.planHeightPx > 0 ? ctx.planHeightPx : 1000;
+  var mpp = effectiveMmPerPixel(ctx);
+
+  var wNorm = widthMm != null ? mmToNormalized(widthMm, mpp, planW) : null;
+  var hNorm = depthMm != null ? mmToNormalized(depthMm, mpp, planH) : null;
+  if (wNorm == null && hNorm == null) return null;
+  if (wNorm == null) wNorm = hNorm;
+  if (hNorm == null) hNorm = wNorm;
+  return {
+    wNorm: Math.min(0.85, Math.max(0.004, wNorm)),
+    hNorm: Math.min(0.85, Math.max(0.004, hNorm)),
+  };
 }
 
 export function formatCatalogDimensionsLabel(row, item) {
@@ -87,23 +158,31 @@ export function applyCatalogSkuToItem(item, catalogRow, ctx) {
 
   var planW = ctx.planWidthPx > 0 ? ctx.planWidthPx : 1000;
   var planH = ctx.planHeightPx > 0 ? ctx.planHeightPx : 1000;
-  var mpp = ctx.mmPerPixel;
 
   var widthMm = catalogRow.width_mm;
-  var depthMm = catalogRow.depth_mm;
+  var depthMm =
+    catalogRow.depth_mm != null ? catalogRow.depth_mm : catalogRow.length_mm;
+
+  delete item.scale;
+  delete item.depth;
+  delete item.width;
+  delete item.height;
 
   if (widthMm == null && depthMm == null) {
     console.warn(
       "[catalog] SKU " + (catalogRow.id || catalogRow.product_code) + " has no width_mm/depth_mm"
     );
   } else {
-    if (widthMm != null) {
-      var wn = mmToNormalized(widthMm, mpp, planW);
-      if (wn != null) item.width = wn;
-    }
-    if (depthMm != null) {
-      var hn = mmToNormalized(depthMm, mpp, planH);
-      if (hn != null) item.height = hn;
+    if (widthMm != null) item.catalogWidthMm = widthMm;
+    if (depthMm != null) item.catalogDepthMm = depthMm;
+    var dims = furnitureNormDimensions(
+      item,
+      { width_mm: widthMm, depth_mm: depthMm },
+      ctx
+    );
+    if (dims) {
+      item.width = dims.wNorm;
+      item.height = dims.hNorm;
     }
   }
 

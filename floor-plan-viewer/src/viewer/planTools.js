@@ -163,6 +163,62 @@ export function formatRoomDimensions(poly, naturalWidth, naturalHeight, calibrat
 }
 
 /**
+ * Dimension + area strings for labels, tooltips, and badges.
+ * @param {object} room
+ * @param {number} naturalWidth
+ * @param {number} naturalHeight
+ * @param {{ metersPerPixel: number }|null} calibrationState
+ * @returns {{ dimLine: string|null, areaLine: string|null }}
+ */
+export function getRoomMeasurementDisplay(room, naturalWidth, naturalHeight, calibrationState) {
+  if (!room) return { dimLine: null, areaLine: null };
+
+  var dimLine =
+    room.dimensionsText != null && room.dimensionsText !== ""
+      ? String(room.dimensionsText)
+      : room.dimensions != null && room.dimensions !== ""
+        ? String(room.dimensions)
+        : null;
+  var areaLine = null;
+
+  if (room.polygon && room.polygon.length >= 3 && naturalWidth && naturalHeight) {
+    if (calibrationState && calibrationState.metersPerPixel) {
+      var computed = formatRoomDimensions(
+        room.polygon,
+        naturalWidth,
+        naturalHeight,
+        calibrationState
+      );
+      if (computed) dimLine = computed;
+      var area = formatAreaLabel(room.polygon, naturalWidth, naturalHeight, calibrationState);
+      if (area && area !== "—") areaLine = area;
+    }
+  }
+
+  if (!areaLine && room.areaSqFt != null && isFinite(room.areaSqFt)) {
+    areaLine = "~" + room.areaSqFt + " sq ft";
+  }
+
+  if (!dimLine && room.polygon && room.polygon.length >= 3 && naturalWidth && naturalHeight) {
+    var bbox = polygonBBox(room.polygon);
+    var wPx = Math.round((bbox.maxX - bbox.minX) * naturalWidth);
+    var hPx = Math.round((bbox.maxY - bbox.minY) * naturalHeight);
+    if (wPx > 0 && hPx > 0) {
+      dimLine = wPx + " × " + hPx + " px";
+      if (!calibrationState || !calibrationState.metersPerPixel) {
+        dimLine += " (set scale for meters)";
+      }
+    }
+    if (!areaLine) {
+      var pxArea = formatAreaLabel(room.polygon, naturalWidth, naturalHeight, null);
+      if (pxArea && pxArea !== "—") areaLine = pxArea;
+    }
+  }
+
+  return { dimLine: dimLine, areaLine: areaLine };
+}
+
+/**
  * @param {Array<object>} rooms
  * @param {string} baseId
  */
@@ -242,4 +298,119 @@ export function findEdgeInsertIndex(pt, poly, thresholdNorm) {
  */
 export function isNearPoint(a, b, thresholdNorm) {
   return Math.hypot(a.x - b.x, a.y - b.y) < thresholdNorm;
+}
+
+/**
+ * Wall polylines from room polygons (closed outline).
+ * @param {Array<object>} rooms
+ */
+export function wallSourceFromRooms(rooms) {
+  return (rooms || [])
+    .filter(function (r) {
+      return r.polygon && r.polygon.length >= 3;
+    })
+    .map(function (r) {
+      var poly = r.polygon.map(function (p) {
+        return { x: p.x, y: p.y };
+      });
+      if (
+        poly.length &&
+        (poly[0].x !== poly[poly.length - 1].x || poly[0].y !== poly[poly.length - 1].y)
+      ) {
+        poly.push({ x: poly[0].x, y: poly[0].y });
+      }
+      return {
+        id: "wall-from-" + (r.id || r.name || "room"),
+        points: poly,
+        thickness: 0.006,
+      };
+    });
+}
+
+/**
+ * Copy room outlines into data.walls when empty so wall tools can edit them.
+ * @param {{ walls?: Array<object>, rooms?: Array<object> }} data
+ */
+export function ensureEditableWalls(data) {
+  if (!data.walls) data.walls = [];
+  if (data.walls.length === 0 && data.rooms && data.rooms.length) {
+    data.walls = wallSourceFromRooms(data.rooms);
+  }
+}
+
+/**
+ * @param {Array<object>} walls
+ */
+export function nextWallId(walls) {
+  var n = 1;
+  var used = {};
+  (walls || []).forEach(function (w) {
+    if (w && w.id) used[w.id] = true;
+  });
+  while (used["wall-" + n]) n++;
+  return "wall-" + n;
+}
+
+/**
+ * @param {Array<object>} walls
+ * @param {Array<{x:number,y:number}>} points
+ */
+export function createWallFromPoints(walls, points) {
+  return {
+    id: nextWallId(walls),
+    points: points.map(function (p) {
+      return { x: p.x, y: p.y };
+    }),
+    thickness: 0.006,
+  };
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @param {Array<object>} walls
+ * @param {number} thresholdNorm
+ */
+export function pickWallAtNorm(x, y, walls, thresholdNorm) {
+  var best = null;
+  var bestDist = thresholdNorm;
+  (walls || []).forEach(function (wall) {
+    var pts = wall.points;
+    if (!pts || pts.length < 2) return;
+    for (var i = 0; i < pts.length - 1; i++) {
+      var d = distPointToSegmentNorm(x, y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = wall;
+      }
+    }
+  });
+  return best;
+}
+
+/**
+ * Insert point on open polyline edge (walls).
+ * @param {{x:number,y:number}} pt
+ * @param {Array<{x:number,y:number}>} points
+ * @param {number} thresholdNorm
+ */
+export function findWallEdgeInsertIndex(pt, points, thresholdNorm) {
+  if (!points || points.length < 2) return null;
+  var bestDist = thresholdNorm;
+  var bestIdx = null;
+  for (var i = 0; i < points.length - 1; i++) {
+    var d = distPointToSegmentNorm(
+      pt.x,
+      pt.y,
+      points[i].x,
+      points[i].y,
+      points[i + 1].x,
+      points[i + 1].y
+    );
+    if (d < bestDist) {
+      bestDist = d;
+      bestIdx = i + 1;
+    }
+  }
+  return bestIdx;
 }

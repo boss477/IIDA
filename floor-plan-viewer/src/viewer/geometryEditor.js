@@ -4,15 +4,19 @@ import {
   clampNorm,
   computeMeasure,
   createRoomFromPreset,
+  createWallFromPoints,
+  ensureEditableWalls,
   findEdgeInsertIndex,
+  findWallEdgeInsertIndex,
   formatAreaLabel,
   formatRoomDimensions,
   isNearPoint,
+  pickWallAtNorm,
   upsertCalibrationSegment,
 } from "./planTools.js";
 
 /**
- * Geometry tools: one active mode at a time (setScale | measure | drawRoom | vertexEdit | view).
+ * Geometry tools: setScale | measure | drawRoom | vertexEdit | editWalls | drawWall | view.
  */
 export function createGeometryEditor(deps) {
   var data = deps.data;
@@ -35,7 +39,11 @@ export function createGeometryEditor(deps) {
   var measureResult = null;
   var drawRoomPoints = null;
   var drawRoomCursor = null;
+  var drawWallPoints = null;
+  var drawWallCursor = null;
   var selectedVertex = null;
+  var selectedWallId = null;
+  var selectedWallVertex = null;
   var undoStack = createUndoStack(50);
 
   function getToolMode() {
@@ -43,7 +51,12 @@ export function createGeometryEditor(deps) {
   }
 
   function isGeometryClickMode() {
-    return toolMode === "setScale" || toolMode === "measure" || toolMode === "drawRoom";
+    return (
+      toolMode === "setScale" ||
+      toolMode === "measure" ||
+      toolMode === "drawRoom" ||
+      toolMode === "drawWall"
+    );
   }
 
   function blocksFurnitureInteraction() {
@@ -55,9 +68,22 @@ export function createGeometryEditor(deps) {
     setToolButtonActive(geoTb.btnMeasure, toolMode === "measure");
     setToolButtonActive(geoTb.btnVertexEdit, toolMode === "vertexEdit");
     setToolButtonActive(geoTb.btnDrawRoom, toolMode === "drawRoom");
+    setToolButtonActive(geoTb.btnEditWalls, toolMode === "editWalls");
+    setToolButtonActive(geoTb.btnAddWall, toolMode === "drawWall");
     geoTb.finishRoomBtn.hidden = toolMode !== "drawRoom";
-    geoTb.deleteVertexBtn.hidden = toolMode !== "vertexEdit" || !selectedVertex;
-    if (toolMode === "setScale" || toolMode === "measure" || toolMode === "drawRoom") {
+    if (geoTb.finishWallBtn) geoTb.finishWallBtn.hidden = toolMode !== "drawWall";
+    geoTb.deleteVertexBtn.hidden =
+      (toolMode !== "vertexEdit" || !selectedVertex) &&
+      (toolMode !== "editWalls" || !selectedWallVertex);
+    if (geoTb.deleteWallBtn) {
+      geoTb.deleteWallBtn.hidden = toolMode !== "editWalls" || !selectedWallId;
+    }
+    if (
+      toolMode === "setScale" ||
+      toolMode === "measure" ||
+      toolMode === "drawRoom" ||
+      toolMode === "drawWall"
+    ) {
       planWrap.classList.add("tool-crosshair");
     } else {
       planWrap.classList.remove("tool-crosshair");
@@ -79,6 +105,12 @@ export function createGeometryEditor(deps) {
       } else if (toolMode === "drawRoom") {
         hintEl.textContent =
           "Add room: click corners · Finish room or click first point (≥3) · set scale for m².";
+      } else if (toolMode === "editWalls") {
+        hintEl.textContent =
+          "Edit walls: click a wall · drag blue handles · click edge to add point · Remove wall deletes selection.";
+      } else if (toolMode === "drawWall") {
+        hintEl.textContent =
+          "Add wall: click points along the wall run (≥2) · Finish wall when done.";
       } else {
         hintEl.textContent =
           "Geometry tools above · Furniture row below · one tool active at a time.";
@@ -93,7 +125,11 @@ export function createGeometryEditor(deps) {
     measureDraft = null;
     drawRoomPoints = null;
     drawRoomCursor = null;
+    drawWallPoints = null;
+    drawWallCursor = null;
     selectedVertex = null;
+    selectedWallId = null;
+    selectedWallVertex = null;
     if (mode !== "measure") {
       measureResult = null;
       updateMeasureReadout("—");
@@ -116,7 +152,16 @@ export function createGeometryEditor(deps) {
       measureDraft = null;
       drawRoomPoints = mode === "drawRoom" ? [] : null;
       drawRoomCursor = null;
+      drawWallPoints = mode === "drawWall" ? [] : null;
+      drawWallCursor = null;
       selectedVertex = null;
+      if (mode === "editWalls" || mode === "drawWall") {
+        ensureEditableWalls(data);
+      }
+      if (mode !== "editWalls") {
+        selectedWallId = null;
+        selectedWallVertex = null;
+      }
       syncToolUi();
       onToolModeChange(mode);
       requestRender();
@@ -173,9 +218,14 @@ export function createGeometryEditor(deps) {
   function captureUndoState() {
     return {
       rooms: JSON.parse(JSON.stringify(data.rooms || [])),
+      walls: JSON.parse(JSON.stringify(data.walls || [])),
       selectedRoomId: selectedRoomId,
+      selectedWallId: selectedWallId,
       selectedVertex: selectedVertex
         ? { roomId: selectedVertex.roomId, index: selectedVertex.index }
+        : null,
+      selectedWallVertex: selectedWallVertex
+        ? { wallId: selectedWallVertex.wallId, index: selectedWallVertex.index }
         : null,
     };
   }
@@ -193,8 +243,11 @@ export function createGeometryEditor(deps) {
     if (!undoStack.canUndo()) return;
     var entry = undoStack.pop();
     data.rooms = entry.state.rooms;
+    data.walls = entry.state.walls || [];
     selectedRoomId = entry.state.selectedRoomId;
+    selectedWallId = entry.state.selectedWallId || null;
     selectedVertex = entry.state.selectedVertex;
+    selectedWallVertex = entry.state.selectedWallVertex || null;
     syncFloorSelect();
     syncRoomMeasureReadout();
     syncUndoButton();
@@ -227,6 +280,13 @@ export function createGeometryEditor(deps) {
     if (dims) room.dimensionsText = dims;
     pushUndo("addRoom");
     data.rooms.push(room);
+    if (data.walls && data.walls.length) {
+      data.walls.push({
+        id: "wall-" + room.id,
+        points: room.polygon.concat([room.polygon[0]]),
+        thickness: 0.006,
+      });
+    }
     drawRoomPoints = null;
     drawRoomCursor = null;
     toolMode = "view";
@@ -239,6 +299,10 @@ export function createGeometryEditor(deps) {
   }
 
   function deleteSelectedVertex() {
+    if (toolMode === "editWalls" && selectedWallVertex) {
+      deleteSelectedWallVertex();
+      return;
+    }
     if (!selectedVertex) return;
     var room = data.rooms.find(function (r) {
       return (r.id || r.name || "") === selectedVertex.roomId;
@@ -251,6 +315,62 @@ export function createGeometryEditor(deps) {
     room.polygon.splice(selectedVertex.index, 1);
     selectedVertex = null;
     syncRoomMeasureReadout();
+    requestRender();
+  }
+
+  function selectWall(wall) {
+    selectedWallId = wall ? wall.id || null : null;
+    selectedWallVertex = null;
+    syncToolUi();
+    requestRender();
+  }
+
+  function deleteSelectedWall() {
+    if (!selectedWallId) return;
+    var idx = (data.walls || []).findIndex(function (w) {
+      return (w.id || "") === selectedWallId;
+    });
+    if (idx < 0) return;
+    pushUndo("deleteWall");
+    var removedId = selectedWallId;
+    data.walls.splice(idx, 1);
+    selectedWallId = null;
+    selectedWallVertex = null;
+    syncToolUi();
+    requestRender();
+  }
+
+  function deleteSelectedWallVertex() {
+    if (!selectedWallVertex) return;
+    var wall = (data.walls || []).find(function (w) {
+      return (w.id || "") === selectedWallVertex.wallId;
+    });
+    if (!wall || !wall.points || wall.points.length <= 2) {
+      alert("A wall needs at least 2 points.");
+      return;
+    }
+    pushUndo("deleteWallVertex");
+    wall.points.splice(selectedWallVertex.index, 1);
+    selectedWallVertex = null;
+    syncToolUi();
+    requestRender();
+  }
+
+  function finishDrawWall() {
+    if (!drawWallPoints || drawWallPoints.length < 2) {
+      alert("Add at least 2 points, then Finish wall.");
+      return;
+    }
+    if (!data.walls) data.walls = [];
+    pushUndo("addWall");
+    var wall = createWallFromPoints(data.walls, drawWallPoints);
+    data.walls.push(wall);
+    drawWallPoints = null;
+    drawWallCursor = null;
+    toolMode = "editWalls";
+    selectWall(wall);
+    syncToolUi();
+    onToolModeChange("editWalls");
     requestRender();
   }
 
@@ -322,11 +442,77 @@ export function createGeometryEditor(deps) {
       requestRender();
       return true;
     }
+    if (toolMode === "drawWall") {
+      if (!drawWallPoints) drawWallPoints = [];
+      drawWallPoints.push(pt);
+      requestRender();
+      return true;
+    }
     if (toolMode === "view") {
       selectRoom(pickRoomAtNorm(pt.x, pt.y));
       return true;
     }
     return false;
+  }
+
+  function handleWallEditClick(pt, handle) {
+    if (handle) {
+      var wallId = handle.getAttribute("data-wall-id");
+      var vi = parseInt(handle.getAttribute("data-vertex-index"), 10);
+      selectedWallId = wallId;
+      selectedWallVertex = { wallId: wallId, index: vi };
+      syncToolUi();
+      requestRender();
+      return true;
+    }
+    var wall = selectedWallId
+      ? (data.walls || []).find(function (w) {
+          return (w.id || "") === selectedWallId;
+        })
+      : pickWallAtNorm(pt.x, pt.y, data.walls, 0.03);
+    if (!wall || !wall.points) {
+      selectWall(null);
+      return true;
+    }
+    selectedWallId = wall.id || null;
+    var insertAt = findWallEdgeInsertIndex(pt, wall.points, 0.025);
+    if (insertAt != null) {
+      pushUndo("addWallVertex");
+      wall.points.splice(insertAt, 0, { x: pt.x, y: pt.y });
+      selectedWallVertex = { wallId: selectedWallId, index: insertAt };
+      syncToolUi();
+      requestRender();
+      return true;
+    }
+    selectWall(wall);
+    return true;
+  }
+
+  function handleWallMousedown(n, handle) {
+    if (handle) {
+      var wallId = handle.getAttribute("data-wall-id");
+      var vi = parseInt(handle.getAttribute("data-vertex-index"), 10);
+      var wall = (data.walls || []).find(function (w) {
+        return (w.id || "") === wallId;
+      });
+      if (!wall || !wall.points || isNaN(vi)) return false;
+      selectedWallId = wallId;
+      selectedWallVertex = { wallId: wallId, index: vi };
+      var pt = wall.points[vi];
+      vertexDrag = {
+        kind: "wall",
+        wallId: wallId,
+        index: vi,
+        ox: pt.x,
+        oy: pt.y,
+        nx: n.x,
+        ny: n.y,
+      };
+      syncToolUi();
+      requestRender();
+      return true;
+    }
+    return handleWallEditClick(n, null);
   }
 
   function handleVertexEditClick(pt, handle) {
@@ -369,7 +555,15 @@ export function createGeometryEditor(deps) {
       selectedVertex = { roomId: roomId, index: vi };
       selectedRoomId = roomId;
       var pt = room.polygon[vi];
-      vertexDrag = { roomId: roomId, index: vi, ox: pt.x, oy: pt.y, nx: n.x, ny: n.y };
+      vertexDrag = {
+        kind: "room",
+        roomId: roomId,
+        index: vi,
+        ox: pt.x,
+        oy: pt.y,
+        nx: n.x,
+        ny: n.y,
+      };
       syncFloorSelect();
       syncRoomMeasureReadout();
       requestRender();
@@ -384,11 +578,28 @@ export function createGeometryEditor(deps) {
       requestRender();
       return true;
     }
+    if (toolMode === "drawWall") {
+      drawWallCursor = clampNorm(n.x, n.y);
+      requestRender();
+      return true;
+    }
     return false;
   }
 
   function handleVertexDragMove(n) {
     if (!vertexDrag) return false;
+    if (vertexDrag.kind === "wall") {
+      var wall = (data.walls || []).find(function (w) {
+        return (w.id || "") === vertexDrag.wallId;
+      });
+      if (wall && wall.points && wall.points[vertexDrag.index]) {
+        var wpt = wall.points[vertexDrag.index];
+        wpt.x = Math.min(1, Math.max(0, vertexDrag.ox + (n.x - vertexDrag.nx)));
+        wpt.y = Math.min(1, Math.max(0, vertexDrag.oy + (n.y - vertexDrag.ny)));
+        requestRender();
+      }
+      return true;
+    }
     var room = data.rooms.find(function (r) {
       return (r.id || r.name || "") === vertexDrag.roomId;
     });
@@ -430,18 +641,35 @@ export function createGeometryEditor(deps) {
       drawRoomAreaLabel: drawLabel,
       roomMeasureBadge: getRoomMeasureBadge(),
       selectedVertex: selectedVertex,
+      wallEditMode: toolMode === "editWalls",
+      selectedWallId: selectedWallId,
+      selectedWallVertex: selectedWallVertex,
+      drawWallPoints: drawWallPoints,
+      drawWallCursor: toolMode === "drawWall" ? drawWallCursor : null,
     };
   }
 
   function handleEscape() {
-    var wasActive = toolMode !== "view" || selectedVertex || scaleDraft || measureDraft || drawRoomPoints;
+    var wasActive =
+      toolMode !== "view" ||
+      selectedVertex ||
+      selectedWallVertex ||
+      selectedWallId ||
+      scaleDraft ||
+      measureDraft ||
+      drawRoomPoints ||
+      drawWallPoints;
     toolMode = "view";
     vertexDrag = null;
     scaleDraft = null;
     measureDraft = null;
     drawRoomPoints = null;
     drawRoomCursor = null;
+    drawWallPoints = null;
+    drawWallCursor = null;
     selectedVertex = null;
+    selectedWallId = null;
+    selectedWallVertex = null;
     measureResult = null;
     updateMeasureReadout("—");
     geoTb.scaleLengthWrap.hidden = true;
@@ -459,17 +687,27 @@ export function createGeometryEditor(deps) {
       finishDrawRoom();
       return true;
     }
+    if (toolMode === "drawWall" && e.key === "Enter") {
+      finishDrawWall();
+      return true;
+    }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
       performUndo();
       return true;
     }
-    if (
-      (e.key === "Delete" || e.key === "Backspace") &&
-      toolMode === "vertexEdit" &&
-      selectedVertex
-    ) {
-      deleteSelectedVertex();
-      return true;
+    if (e.key === "Delete" || e.key === "Backspace") {
+      if (toolMode === "editWalls" && selectedWallVertex) {
+        deleteSelectedWallVertex();
+        return true;
+      }
+      if (toolMode === "editWalls" && selectedWallId) {
+        deleteSelectedWall();
+        return true;
+      }
+      if (toolMode === "vertexEdit" && selectedVertex) {
+        deleteSelectedVertex();
+        return true;
+      }
     }
     return false;
   }
@@ -488,6 +726,7 @@ export function createGeometryEditor(deps) {
     getRenderOptions: getRenderOptions,
     handlePlanClick: handlePlanClick,
     handleVertexMousedown: handleVertexMousedown,
+    handleWallMousedown: handleWallMousedown,
     handleMousemove: handleMousemove,
     handleVertexDragMove: handleVertexDragMove,
     clearVertexDrag: clearVertexDrag,
@@ -495,7 +734,9 @@ export function createGeometryEditor(deps) {
     handleKeydown: handleKeydown,
     toggleTool: toggleTool,
     finishDrawRoom: finishDrawRoom,
+    finishDrawWall: finishDrawWall,
     deleteSelectedVertex: deleteSelectedVertex,
+    deleteSelectedWall: deleteSelectedWall,
     performUndo: performUndo,
     applyScaleFromInput: applyScaleFromInput,
     onFloorChange: function () {

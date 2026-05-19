@@ -58,6 +58,51 @@ def resolve_lm_studio_settings() -> tuple[str, str]:
 
 LM_BASE, MODEL = resolve_lm_studio_settings()
 
+
+def _load_env_file() -> None:
+    env_path = ROOT_DIR / ".env"
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env_file()
+
+GEMINI_KEY = (
+    os.environ.get("GEMINI_API_KEY", "").strip()
+    or os.environ.get("VITE_GEMINI_API_KEY", "").strip()
+)
+GEMINI_MODEL = (
+    os.environ.get("GEMINI_MODEL", "").strip()
+    or os.environ.get("VITE_GEMINI_MODEL", "").strip()
+    or "gemini-3-flash-preview"
+)
+
+KIMI_KEY = (
+    os.environ.get("KIMI_API_KEY", "").strip()
+    or os.environ.get("VITE_KIMI_API_KEY", "").strip()
+    or os.environ.get("FIREWORKS_API_KEY", "").strip()
+    or os.environ.get("VITE_FIREWORKS_API_KEY", "").strip()
+)
+KIMI_MODEL = (
+    os.environ.get("KIMI_MODEL", "").strip()
+    or os.environ.get("VITE_KIMI_MODEL", "").strip()
+    or "accounts/fireworks/models/kimi-k2p5"
+)
+FIREWORKS_BASE = (
+    os.environ.get("FIREWORKS_BASE_URL", "").strip()
+    or os.environ.get("VITE_FIREWORKS_BASE_URL", "").strip()
+    or "https://api.fireworks.ai/inference/v1"
+).rstrip("/")
+
 SYSTEM_PROMPT = """You analyze architectural floor plan images for a premium architectural SVG renderer.
 
 Return exactly one valid JSON object. Extract enough normalized geometry to redraw the plan as vector SVG: room floor materials, wall runs, door swings/openings, labels, and visible furniture.
@@ -81,6 +126,8 @@ Reply with ONLY valid JSON, no markdown. Example shape:
 
 def strip_fence(s: str) -> str:
     t = s.strip()
+    if t.startswith("\ufeff"):
+        t = t[1:]
     if t.startswith("```"):
         t = re.sub(r"^```(?:json)?\s*", "", t, flags=re.I)
         t = re.sub(r"\s*```$", "", t)
@@ -90,15 +137,110 @@ def strip_fence(s: str) -> str:
     return t.strip()
 
 
+def _strip_trailing_commas(s: str) -> str:
+    return re.sub(r",\s*([}\]])", r"\1", s)
+
+
+def _extract_balanced_json(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _openai_content_to_text(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("text"):
+                parts.append(str(part["text"]))
+            elif isinstance(part, str):
+                parts.append(part)
+        return "".join(parts)
+    if isinstance(content, dict) and content.get("text"):
+        return str(content["text"])
+    return ""
+
+
+def _message_text_candidates(message: dict) -> list[str]:
+    if not isinstance(message, dict):
+        return []
+    candidates: list[str] = []
+    main = _openai_content_to_text(message.get("content"))
+    if main.strip():
+        candidates.append(main)
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip() and reasoning != main:
+        candidates.append(reasoning)
+    return candidates
+
+
 def parse_model_json(text: str) -> dict:
     cleaned = strip_fence(text)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        match = re.search(r"\{[\s\S]*\}", cleaned)
-        if not match:
-            raise
-        return json.loads(match.group(0))
+    brace = cleaned.find("{")
+    if brace > 0:
+        cleaned = cleaned[brace:]
+    attempts = [cleaned]
+    balanced = _extract_balanced_json(cleaned)
+    if balanced and balanced != cleaned:
+        attempts.append(balanced)
+    last_err: json.JSONDecodeError | None = None
+    for candidate in attempts:
+        candidate = _strip_trailing_commas(candidate)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as err:
+            last_err = err
+    if last_err:
+        raise last_err
+    raise json.JSONDecodeError("No JSON object in model text", text, 0)
+
+
+def parse_openai_message(
+    message: dict, finish_reason: str | None = None, label: str = "model"
+) -> dict:
+    candidates = _message_text_candidates(message)
+    if not candidates:
+        raise RuntimeError(f"No message content from {label}")
+    last_err: Exception | None = None
+    for text in candidates:
+        try:
+            return parse_model_json(text)
+        except (json.JSONDecodeError, ValueError) as err:
+            last_err = err
+    if finish_reason == "length":
+        raise RuntimeError(
+            f"{label} response was truncated (token limit). Try a smaller image or re-run."
+        )
+    if last_err:
+        raise last_err
+    raise RuntimeError(f"Could not parse JSON from {label}")
 
 
 def _num(value, default=None):
@@ -296,6 +438,90 @@ def parse_response(text: str) -> dict:
     return normalize_analysis(parse_model_json(text))
 
 
+def analyze_via_gemini(b64: str, mime: str) -> dict:
+    if not GEMINI_KEY:
+        raise ValueError("GEMINI_API_KEY or VITE_GEMINI_API_KEY not set")
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{requests.utils.quote(GEMINI_MODEL, safe='')}:generateContent"
+        f"?key={requests.utils.quote(GEMINI_KEY, safe='')}"
+    )
+    user_text = (
+        "Extract rooms, flooring materials, walls, doors, windows, labels, dimensions, "
+        "and furniture for a premium vector SVG redraw. Output JSON only."
+    )
+    body = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": SYSTEM_PROMPT + "\n\n" + user_text},
+                    {"inline_data": {"mime_type": mime, "data": b64}},
+                ]
+            }
+        ],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
+    }
+    r = requests.post(url, json=body, timeout=(10, 3600))
+    if not r.ok:
+        raise RuntimeError(f"Gemini: {r.status_code} {r.text[:500]}")
+    data = r.json()
+    parts = (
+        data.get("candidates", [{}])[0]
+        .get("content", {})
+        .get("parts", [])
+    )
+    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    if not text:
+        raise RuntimeError("No text from Gemini")
+    return parse_response(text)
+
+
+def analyze_via_kimi(b64: str, mime: str) -> dict:
+    if not KIMI_KEY:
+        raise ValueError("KIMI_API_KEY or VITE_KIMI_API_KEY not set")
+    url = f"{FIREWORKS_BASE}/chat/completions"
+    user_text = (
+        "Extract rooms, flooring materials, walls, doors, windows, labels, dimensions, "
+        "and furniture for a premium vector SVG redraw. Output JSON only."
+    )
+    body = {
+        "model": KIMI_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}"},
+                    },
+                ],
+            },
+        ],
+        "temperature": 0.2,
+        "max_tokens": 8192,
+        "response_format": {"type": "json_object"},
+    }
+    r = requests.post(
+        url,
+        json=body,
+        headers={"Authorization": f"Bearer {KIMI_KEY}", "Content-Type": "application/json"},
+        timeout=(10, 3600),
+    )
+    if not r.ok:
+        raise RuntimeError(f"Kimi: {r.status_code} {r.text[:500]}")
+    data = r.json()
+    choice = data["choices"][0]
+    return normalize_analysis(
+        parse_openai_message(
+            choice.get("message") or {},
+            finish_reason=choice.get("finish_reason"),
+            label="Kimi",
+        )
+    )
+
+
 def lm_models_url() -> str:
     base = re.sub(r"/v1$", "", LM_BASE)
     return f"{base}/v1/models"
@@ -310,12 +536,17 @@ def serve_index():
         )
 
     html = index_path.read_text(encoding="utf-8")
-    config_script = f"""
-  <script>
-    window.__ANALYZE_API__ = window.location.origin;
-    window.__SERVER_LM_MODEL__ = {json.dumps(MODEL)};
-    window.__SERVER_LM_BASE__ = {json.dumps(LM_BASE)};
-  </script>"""
+    lines = ["  <script>"]
+    if not KIMI_KEY and not GEMINI_KEY:
+        lines.append("    window.__ANALYZE_API__ = window.location.origin;")
+    lines.append(f"    window.__SERVER_LM_MODEL__ = {json.dumps(MODEL)};")
+    lines.append(f"    window.__SERVER_LM_BASE__ = {json.dumps(LM_BASE)};")
+    if KIMI_KEY:
+        lines.append(f"    window.__SERVER_KIMI_MODEL__ = {json.dumps(KIMI_MODEL)};")
+    if GEMINI_KEY:
+        lines.append(f"    window.__SERVER_GEMINI_MODEL__ = {json.dumps(GEMINI_MODEL)};")
+    lines.append("  </script>")
+    config_script = "\n".join(lines)
     html = html.replace("</head>", f"{config_script}\n</head>")
     return Response(html, mimetype="text/html")
 
@@ -335,11 +566,29 @@ def analyze_opts():
 
 @app.route("/api/health", methods=["GET"])
 def health():
+    if KIMI_KEY:
+        return jsonify(
+            {
+                "ok": True,
+                "provider": "kimi",
+                "model": KIMI_MODEL,
+                "baseUrl": FIREWORKS_BASE,
+            }
+        )
+    if GEMINI_KEY:
+        return jsonify(
+            {
+                "ok": True,
+                "provider": "gemini",
+                "model": GEMINI_MODEL,
+            }
+        )
     try:
         r = requests.get(lm_models_url(), timeout=5)
         return jsonify(
             {
                 "ok": r.ok,
+                "provider": "lm_studio",
                 "lmStudioUrl": LM_BASE,
                 "model": MODEL,
                 "status": r.status_code,
@@ -349,6 +598,7 @@ def health():
         return jsonify(
             {
                 "ok": False,
+                "provider": "lm_studio",
                 "lmStudioUrl": LM_BASE,
                 "model": MODEL,
                 "error": f"LM Studio is not reachable: {e}",
@@ -385,6 +635,13 @@ def analyze():
         b64 = resize_image_b64(b64, max_size=1024)
         
         mime = payload.get("mimeType") or "image/png"
+        if KIMI_KEY:
+            parsed = analyze_via_kimi(b64, mime)
+            return jsonify(parsed)
+        if GEMINI_KEY:
+            parsed = analyze_via_gemini(b64, mime)
+            return jsonify(parsed)
+
         url = f"{LM_BASE}/chat/completions"
         body = {
             "model": MODEL or "local-model",
@@ -422,6 +679,336 @@ def analyze():
         return jsonify({"error": str(e)}), 500
 
 
+def get_supabase_config():
+    url = os.environ.get("VITE_SUPABASE_URL", "")
+    key = os.environ.get("VITE_SUPABASE_ANON_KEY", "")
+    if not url or not key:
+        env_path = Path(__file__).parent / ".env"
+        if env_path.is_file():
+            content = env_path.read_text(encoding="utf-8")
+            url_match = re.search(r"VITE_SUPABASE_URL\s*=\s*(.+)", content)
+            key_match = re.search(r"VITE_SUPABASE_ANON_KEY\s*=\s*(.+)", content)
+            if url_match:
+                url = url_match.group(1).strip().strip("'\"")
+            if key_match:
+                key = key_match.group(1).strip().strip("'\"")
+    return url, key
+
+
+def point_in_polygon(x, y, polygon):
+    if not polygon or len(polygon) < 3:
+        return False
+    inside = False
+    p1 = polygon[0]
+    n = len(polygon)
+    for i in range(1, n + 1):
+        p2 = polygon[i % n]
+        if y > min(p1.get('y', 0), p2.get('y', 0)):
+            if y <= max(p1.get('y', 0), p2.get('y', 0)):
+                if x <= max(p1.get('x', 0), p2.get('x', 0)):
+                    if p1.get('y', 0) != p2.get('y', 0):
+                        xints = (y - p1.get('y', 0)) * (p2.get('x', 0) - p1.get('x', 0)) / (p2.get('y', 0) - p1.get('y', 0)) + p1.get('x', 0)
+                    if p1.get('x', 0) == p2.get('x', 0) or x <= xints:
+                        inside = not inside
+        p1 = p2
+    return inside
+
+
+@app.route("/api/projects/<project_id>", methods=["GET"])
+def get_project(project_id):
+    sb_url, sb_key = get_supabase_config()
+    if not sb_url or not sb_key:
+        return jsonify({"error": "Supabase credentials not configured in environment or .env"}), 500
+
+    headers = {
+        "apikey": sb_key,
+        "Authorization": f"Bearer {sb_key}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        # Fetch project
+        proj_req = requests.get(f"{sb_url}/rest/v1/projects?id=eq.{project_id}", headers=headers)
+        if not proj_req.ok:
+            return jsonify({"error": f"Failed to fetch project: {proj_req.text}"}), proj_req.status_code
+        proj_data = proj_req.json()
+        if not proj_data:
+            return jsonify({"error": "Project not found"}), 404
+        project = proj_data[0]
+
+        # Fetch rooms
+        rooms_req = requests.get(f"{sb_url}/rest/v1/rooms?project_id=eq.{project_id}", headers=headers)
+        rooms_data = rooms_req.json() if rooms_req.ok else []
+
+        # Fetch structural elements
+        struct_req = requests.get(f"{sb_url}/rest/v1/structural_elements?project_id=eq.{project_id}", headers=headers)
+        struct_data = struct_req.json() if struct_req.ok else []
+
+        # Fetch placed furniture
+        furn_req = requests.get(f"{sb_url}/rest/v1/placed_furniture?project_id=eq.{project_id}", headers=headers)
+        furn_data = furn_req.json() if furn_req.ok else []
+
+        # Map back to client format
+        rooms = []
+        for r in rooms_data:
+            rooms.append({
+                "id": r.get("client_id") or r.get("id"),
+                "name": r.get("name"),
+                "type": r.get("type"),
+                "flooring": r.get("flooring"),
+                "polygon": r.get("polygon"),
+                "labelPoint": r.get("label_point"),
+                "dimensions": r.get("dimensions_text"),
+                "area": r.get("area")
+            })
+
+        walls = []
+        doors = []
+        windows = []
+        for s in struct_data:
+            kind = s.get("kind")
+            client_id = s.get("client_id") or s.get("id")
+            if kind == "wall":
+                walls.append({
+                    "id": client_id,
+                    "points": s.get("geometry"),
+                    "thickness": s.get("thickness")
+                })
+            elif kind == "door":
+                doors.append({
+                    "id": client_id,
+                    "polygon": s.get("geometry"),
+                    "connects": s.get("connects")
+                })
+            elif kind == "window":
+                windows.append({
+                    "id": client_id,
+                    "polygon": s.get("geometry")
+                })
+
+        furniture = []
+        for f in furn_data:
+            furniture.append({
+                "id": f.get("client_id") or f.get("id"),
+                "catalogId": f.get("catalog_id"),
+                "x": float(f.get("x") or 0),
+                "y": float(f.get("y") or 0),
+                "z": float(f.get("z") or 0),
+                "rotationDeg": float(f.get("rotation_deg") or 0),
+                "sofaColorOverride": (f.get("overrides") or {}).get("sofaColorOverride") if f.get("overrides") else None,
+                "sofaParams": (f.get("overrides") or {}).get("sofaParams") if f.get("overrides") else None
+            })
+
+        # Assemble viewer JSON
+        assembled = {
+            "label": project.get("name"),
+            "calibration": project.get("calibration"),
+            "rooms": rooms,
+            "walls": walls,
+            "doors": doors,
+            "windows": windows,
+            "furniture": furniture
+        }
+        return jsonify(assembled)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/projects/<project_id>", methods=["PUT"])
+def save_project(project_id):
+    sb_url, sb_key = get_supabase_config()
+    if not sb_url or not sb_key:
+        return jsonify({"error": "Supabase credentials not configured in environment or .env"}), 500
+
+    payload = request.json or {}
+    name = payload.get("label") or "Project"
+    calibration = payload.get("calibration")
+
+    headers = {
+        "apikey": sb_key,
+        "Authorization": f"Bearer {sb_key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+
+    try:
+        # Check if project exists
+        proj_req = requests.get(f"{sb_url}/rest/v1/projects?id=eq.{project_id}", headers=headers)
+        project_exists = proj_req.ok and len(proj_req.json()) > 0
+
+        # Upsert project
+        project_body = {
+            "id": project_id,
+            "name": name,
+            "calibration": calibration
+        }
+        if project_exists:
+            upsert_req = requests.patch(f"{sb_url}/rest/v1/projects?id=eq.{project_id}", json=project_body, headers=headers)
+        else:
+            upsert_req = requests.post(f"{sb_url}/rest/v1/projects", json=project_body, headers=headers)
+
+        if not upsert_req.ok:
+            return jsonify({"error": f"Failed to save project: {upsert_req.text}"}), upsert_req.status_code
+
+        # Clear existing elements to replace them in a single transaction-like sequence
+        requests.delete(f"{sb_url}/rest/v1/rooms?project_id=eq.{project_id}", headers=headers)
+        requests.delete(f"{sb_url}/rest/v1/structural_elements?project_id=eq.{project_id}", headers=headers)
+        requests.delete(f"{sb_url}/rest/v1/placed_furniture?project_id=eq.{project_id}", headers=headers)
+
+        # Save rooms
+        rooms_list = payload.get("rooms", [])
+        room_client_to_uuid = {}
+        if rooms_list:
+            insert_rooms = []
+            for r in rooms_list:
+                insert_rooms.append({
+                    "project_id": project_id,
+                    "client_id": r.get("id"),
+                    "name": r.get("name"),
+                    "type": r.get("type"),
+                    "flooring": r.get("flooring"),
+                    "polygon": r.get("polygon"),
+                    "label_point": r.get("labelPoint"),
+                    "dimensions_text": r.get("dimensions"),
+                    "area": r.get("area")
+                })
+            r_res = requests.post(f"{sb_url}/rest/v1/rooms", json=insert_rooms, headers=headers)
+            if r_res.ok:
+                for db_room in r_res.json():
+                    client_id = db_room.get("client_id")
+                    if client_id:
+                        room_client_to_uuid[client_id] = db_room.get("id")
+
+        # Save structural elements (walls, doors, windows)
+        structs = []
+        for w in payload.get("walls", []):
+            structs.append({
+                "project_id": project_id,
+                "client_id": w.get("id"),
+                "kind": "wall",
+                "geometry": w.get("points"),
+                "thickness": w.get("thickness")
+            })
+        for d in payload.get("doors", []):
+            structs.append({
+                "project_id": project_id,
+                "client_id": d.get("id"),
+                "kind": "door",
+                "geometry": d.get("polygon"),
+                "connects": d.get("connects")
+            })
+        for win in payload.get("windows", []):
+            structs.append({
+                "project_id": project_id,
+                "client_id": win.get("id"),
+                "kind": "window",
+                "geometry": win.get("polygon")
+            })
+        if structs:
+            requests.post(f"{sb_url}/rest/v1/structural_elements", json=structs, headers=headers)
+
+        # Save furniture
+        furnitures = []
+        for f in payload.get("furniture", []):
+            # Compute containing room
+            fx = float(f.get("x") or 0)
+            fy = float(f.get("y") or 0)
+            room_uuid = None
+            for r in rooms_list:
+                if point_in_polygon(fx, fy, r.get("polygon", [])):
+                    room_uuid = room_client_to_uuid.get(r.get("id"))
+                    break
+            
+            overrides = {}
+            if f.get("sofaColorOverride"):
+                overrides["sofaColorOverride"] = f.get("sofaColorOverride")
+            if f.get("sofaParams"):
+                overrides["sofaParams"] = f.get("sofaParams")
+
+            furnitures.append({
+                "project_id": project_id,
+                "room_id": room_uuid,
+                "client_id": f.get("id"),
+                "catalog_id": f.get("catalogId"),
+                "x": fx,
+                "y": fy,
+                "z": float(f.get("z") or 0),
+                "rotation_deg": float(f.get("rotationDeg") or 0),
+                "overrides": overrides if overrides else None
+            })
+        if furnitures:
+            requests.post(f"{sb_url}/rest/v1/placed_furniture", json=furnitures, headers=headers)
+
+        return jsonify({"success": True, "projectId": project_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/projects/dataset-export", methods=["GET"])
+def dataset_export():
+    sb_url, sb_key = get_supabase_config()
+    if not sb_url or not sb_key:
+        return jsonify({"error": "Supabase credentials not configured in environment or .env"}), 500
+
+    headers = {
+        "apikey": sb_key,
+        "Authorization": f"Bearer {sb_key}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        # Fetch all projects
+        proj_req = requests.get(f"{sb_url}/rest/v1/projects", headers=headers)
+        if not proj_req.ok:
+            return jsonify({"error": proj_req.text}), proj_req.status_code
+        projects = proj_req.json()
+
+        export_rows = []
+        for proj in projects:
+            p_id = proj.get("id")
+            
+            # Fetch rooms
+            rooms_req = requests.get(f"{sb_url}/rest/v1/rooms?project_id=eq.{p_id}", headers=headers)
+            rooms = rooms_req.json() if rooms_req.ok else []
+
+            # Fetch furniture
+            furn_req = requests.get(f"{sb_url}/rest/v1/placed_furniture?project_id=eq.{p_id}", headers=headers)
+            furniture = furn_req.json() if furn_req.ok else []
+
+            for room in rooms:
+                poly = room.get("polygon")
+                if not poly:
+                    continue
+                
+                placed_inside = []
+                for f in furniture:
+                    fx = float(f.get("x") or 0)
+                    fy = float(f.get("y") or 0)
+                    if point_in_polygon(fx, fy, poly):
+                        placed_inside.append({
+                            "catalog_id": f.get("catalog_id"),
+                            "x": fx,
+                            "y": fy,
+                            "z": float(f.get("z") or 0),
+                            "rotation_deg": float(f.get("rotation_deg") or 0),
+                            "overrides": f.get("overrides")
+                        })
+                
+                export_rows.append({
+                    "project_id": p_id,
+                    "project_name": proj.get("name"),
+                    "room_id": room.get("id"),
+                    "room_name": room.get("name"),
+                    "room_type": room.get("type"),
+                    "room_polygon": poly,
+                    "furniture_placements": placed_inside
+                })
+
+        return jsonify(export_rows)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/", methods=["GET"])
 def index():
     return serve_index()
@@ -445,6 +1032,11 @@ def spa_fallback(_path):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5173"))
     print(f"Floor plan viewer http://127.0.0.1:{port}")
-    print(f"Analyze API http://127.0.0.1:{port}/api/analyze -> LM {LM_BASE}")
-    print(f"LM Studio model: {MODEL} (edit lm_studio.json to change; overrides shell env)")
+    if KIMI_KEY:
+        print(f"Analyze API http://127.0.0.1:{port}/api/analyze -> Kimi {KIMI_MODEL}")
+    elif GEMINI_KEY:
+        print(f"Analyze API http://127.0.0.1:{port}/api/analyze -> Gemini {GEMINI_MODEL}")
+    else:
+        print(f"Analyze API http://127.0.0.1:{port}/api/analyze -> LM {LM_BASE}")
+        print(f"LM Studio model: {MODEL} (edit lm_studio.json to change; overrides shell env)")
     app.run(host="127.0.0.1", port=port, debug=False)

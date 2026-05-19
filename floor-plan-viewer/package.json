@@ -12,7 +12,8 @@
   "dependencies": {
     "@chenglou/pretext": "^0.0.7",
     "@supabase/supabase-js": "^2.49.1",
-    "gsap": "^3.15.0"
+    "gsap": "^3.15.0",
+    "three": "^0.184.0"
   },
   "devDependencies": {
     "vite": "^6.3.5"
