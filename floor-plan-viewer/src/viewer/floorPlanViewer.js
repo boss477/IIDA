@@ -456,7 +456,7 @@ export function initFloorPlanViewer() {
   }
 
   function applyAnalysisFromObject(nextData) {
-    data = Object.assign(
+    var normalized = Object.assign(
       {
         analysisVersion: "1.0",
         label: "",
@@ -470,6 +470,10 @@ export function initFloorPlanViewer() {
       },
       nextData || {}
     );
+    Object.keys(data).forEach(function (key) {
+      delete data[key];
+    });
+    Object.assign(data, normalized);
     data.rooms = Array.isArray(data.rooms) ? data.rooms : [];
     data.walls = Array.isArray(data.walls) ? data.walls : [];
     data.furniture = Array.isArray(data.furniture) ? data.furniture : [];
@@ -490,6 +494,7 @@ export function initFloorPlanViewer() {
     });
     selectedFurnitureId = null;
     activeRoomId = null;
+    if (geo && geo.resetForNewData) geo.resetForNewData();
     syncReplaceSelect();
     refreshCalibration();
     applyCatalogToAllFurniture();
@@ -866,16 +871,18 @@ export function initFloorPlanViewer() {
       var wallHandle = e.target.closest(".plan-wall-vertex-handle");
       if (geo.getToolMode() === "editWalls") {
         e.stopPropagation();
+        e.preventDefault();
         geo.handleWallMousedown(n, wallHandle);
-        if (wallHandle) vertexDrag = true;
+        vertexDrag = geo.hasActiveVertexDrag();
         return;
       }
 
       var handle = e.target.closest(".plan-vertex-handle");
       if (geo.getToolMode() === "vertexEdit") {
         e.stopPropagation();
+        e.preventDefault();
         geo.handleVertexMousedown(n, handle);
-        if (handle) vertexDrag = true;
+        vertexDrag = geo.hasActiveVertexDrag();
         return;
       }
 

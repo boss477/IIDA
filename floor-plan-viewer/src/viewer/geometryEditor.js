@@ -280,13 +280,6 @@ export function createGeometryEditor(deps) {
     if (dims) room.dimensionsText = dims;
     pushUndo("addRoom");
     data.rooms.push(room);
-    if (data.walls && data.walls.length) {
-      data.walls.push({
-        id: "wall-" + room.id,
-        points: room.polygon.concat([room.polygon[0]]),
-        thickness: 0.006,
-      });
-    }
     drawRoomPoints = null;
     drawRoomCursor = null;
     toolMode = "view";
@@ -622,6 +615,10 @@ export function createGeometryEditor(deps) {
     return false;
   }
 
+  function hasActiveVertexDrag() {
+    return !!vertexDrag;
+  }
+
   function getRenderOptions() {
     var cal = getCalibrationState();
     var drawLabel = "";
@@ -718,6 +715,29 @@ export function createGeometryEditor(deps) {
     syncRoomMeasureReadout();
   }
 
+  function resetForNewData() {
+    toolMode = "view";
+    vertexDrag = null;
+    selectedRoomId = null;
+    scaleDraft = null;
+    measureDraft = null;
+    measureResult = null;
+    drawRoomPoints = null;
+    drawRoomCursor = null;
+    drawWallPoints = null;
+    drawWallCursor = null;
+    selectedVertex = null;
+    selectedWallId = null;
+    selectedWallVertex = null;
+    undoStack.clear();
+    updateMeasureReadout("—");
+    geoTb.scaleLengthWrap.hidden = true;
+    syncToolUi();
+    syncFloorSelect();
+    syncRoomMeasureReadout();
+    onToolModeChange("view");
+  }
+
   return {
     init: init,
     getToolMode: getToolMode,
@@ -730,9 +750,11 @@ export function createGeometryEditor(deps) {
     handleMousemove: handleMousemove,
     handleVertexDragMove: handleVertexDragMove,
     clearVertexDrag: clearVertexDrag,
+    hasActiveVertexDrag: hasActiveVertexDrag,
     handleEscape: handleEscape,
     handleKeydown: handleKeydown,
     toggleTool: toggleTool,
+    resetForNewData: resetForNewData,
     finishDrawRoom: finishDrawRoom,
     finishDrawWall: finishDrawWall,
     deleteSelectedVertex: deleteSelectedVertex,
