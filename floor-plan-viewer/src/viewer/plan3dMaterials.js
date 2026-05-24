@@ -308,3 +308,22 @@ export function createTableTopMaterial() {
     metalness: 0.05,
   });
 }
+
+export function createGlassMaterial() {
+  return new THREE.MeshStandardMaterial({
+    color: 0xc0d8ee,
+    transparent: true,
+    opacity: 0.32,
+    roughness: 0.03,
+    metalness: 0.18,
+    side: THREE.DoubleSide,
+  });
+}
+
+export function createWindowFrameMaterial() {
+  return new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.6,
+    metalness: 0.04,
+  });
+}

@@ -5,8 +5,10 @@ import { catalogById } from "../lib/catalogSizing.js";
 import {
   createFabricMaterial,
   createFloorMaterial,
+  createGlassMaterial,
   createTableTopMaterial,
   createWallMaterial,
+  createWindowFrameMaterial,
   createWoodLegMaterial,
   disposeMaterials,
 } from "./plan3dMaterials.js";
@@ -27,6 +29,7 @@ var activePlanImage;
 var sceneBounds = null;
 var viewMode = "dollhouse";
 var sceneContent = null;
+var planToWorld = null;
 
 function disposeSceneGraph(root) {
   if (!root) return;
@@ -78,9 +81,15 @@ export function init3D(container, data, planImage) {
   sceneContent = new THREE.Group();
   scene.add(sceneContent);
 
+  var lightingStats = null;
   buildSceneGeometry();
-  if (sceneBounds) {
-    addSceneLighting(scene, sceneBounds);
+  if (sceneBounds && planToWorld) {
+    lightingStats = addSceneLighting(
+      scene,
+      sceneBounds,
+      activePlanData.rooms || [],
+      planToWorld
+    );
     frameCamera(camera, controls, sceneBounds, viewMode);
   }
 
@@ -133,6 +142,7 @@ export function dispose3D() {
   camera = null;
   containerEl = null;
   sceneBounds = null;
+  planToWorld = null;
 }
 
 /**
@@ -163,6 +173,66 @@ function polygonRepeat(room, wReal, hReal) {
   return { x: Math.max(rw / 2, 1.5), y: Math.max(rh / 2, 1.5) };
 }
 
+/**
+ * Window on longest room edge (3.html-style frame + glass).
+ */
+function addRoomWindow(room, toWorld, wallHeight, matFr, matG, parent) {
+  var poly = room.polygon;
+  if (!poly || poly.length < 3) return;
+
+  var bestLen = 0;
+  var bestA = null;
+  var bestB = null;
+  for (var i = 0; i < poly.length; i++) {
+    var a = toWorld(poly[i]);
+    var b = toWorld(poly[(i + 1) % poly.length]);
+    var len = Math.hypot(b.x - a.x, b.z - a.z);
+    if (len > bestLen) {
+      bestLen = len;
+      bestA = a;
+      bestB = b;
+    }
+  }
+  if (bestLen < 1.8 || !bestA) return;
+
+  var midX = (bestA.x + bestB.x) / 2;
+  var midZ = (bestA.z + bestB.z) / 2;
+  var angle = -Math.atan2(bestB.z - bestA.z, bestB.x - bestA.x);
+  var wWin = Math.min(bestLen * 0.35, bestLen - 0.4);
+  if (wWin < 0.8) return;
+
+  var wy1 = wallHeight * 0.29;
+  var wy2 = wallHeight * 0.94;
+  var wH = wy2 - wy1;
+  var fcy = wy1 + wH / 2;
+  var fw = 0.07;
+  var wallZ = 0.12;
+  var glassZ = 0.19;
+  var paneW = (wWin - fw) / 2;
+  var paneOff = (paneW + fw) / 4;
+
+  var g = new THREE.Group();
+  g.position.set(midX, 0, midZ);
+  g.rotation.y = angle;
+
+  function lm(geo, mat, x, y, z) {
+    var m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    g.add(m);
+  }
+
+  lm(new THREE.BoxGeometry(wWin + fw * 2, fw, 0.12), matFr, 0, wy1, wallZ);
+  lm(new THREE.BoxGeometry(wWin + fw * 2, fw, 0.12), matFr, 0, wy2, wallZ);
+  lm(new THREE.BoxGeometry(fw, wH, 0.12), matFr, -wWin / 2, fcy, wallZ);
+  lm(new THREE.BoxGeometry(fw, wH, 0.12), matFr, wWin / 2, fcy, wallZ);
+  lm(new THREE.PlaneGeometry(paneW, wH), matG, -paneOff, fcy, glassZ);
+  lm(new THREE.PlaneGeometry(paneW, wH), matG, paneOff, fcy, glassZ);
+
+  parent.add(g);
+}
+
 function buildSceneGeometry() {
   if (!activePlanData || !sceneContent) return;
 
@@ -185,9 +255,12 @@ function buildSceneGeometry() {
     };
   }
 
+  planToWorld = toWorld;
   sceneBounds = computeSceneBounds(activePlanData.rooms || [], toWorld);
 
   var wallMat = createWallMaterial();
+  var matFr = createWindowFrameMaterial();
+  var matG = createGlassMaterial();
   var wallHeight = 2.7;
 
   (activePlanData.rooms || []).forEach(function (room) {
@@ -210,6 +283,8 @@ function buildSceneGeometry() {
     floorMesh.position.y = 0.005;
     floorMesh.receiveShadow = true;
     sceneContent.add(floorMesh);
+
+    addRoomWindow(room, toWorld, wallHeight, matFr, matG, sceneContent);
   });
 
   var walls = (activePlanData.walls || []).slice();
