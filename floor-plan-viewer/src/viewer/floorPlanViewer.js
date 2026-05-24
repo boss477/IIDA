@@ -35,7 +35,7 @@ import { createGeometryEditor } from "./geometryEditor.js";
 import { mountFileToolbar, mountGeometryToolbar } from "./toolbar.js";
 import { getRoomMeasurementDisplay } from "./planTools.js";
 import { syncOverlayToImage } from "../lib/coordinates.js";
-import { init3D, dispose3D, resize3D } from "./plan3dViewer.js";
+import { init3D, dispose3D, resize3D, set3DViewMode } from "./plan3dViewer.js";
 
 var PLAN_SIZE = { width: 1000, height: 1000 };
 
@@ -567,12 +567,35 @@ export function initFloorPlanViewer() {
 
   var viewport2D = document.getElementById("viewport");
   var viewport3D = document.getElementById("viewport3d");
+  var view3dChrome = document.getElementById("view3d-chrome");
+  var btn3dDollhouse = document.getElementById("btn3d-dollhouse");
+  var btn3dTop = document.getElementById("btn3d-top");
+
+  function set3dChromeActive(mode) {
+    if (!btn3dDollhouse || !btn3dTop) return;
+    btn3dDollhouse.classList.toggle("view3d-btn--active", mode === "dollhouse");
+    btn3dTop.classList.toggle("view3d-btn--active", mode === "top");
+  }
+
+  if (btn3dDollhouse) {
+    btn3dDollhouse.addEventListener("click", function () {
+      set3DViewMode("dollhouse");
+      set3dChromeActive("dollhouse");
+    });
+  }
+  if (btn3dTop) {
+    btn3dTop.addEventListener("click", function () {
+      set3DViewMode("top");
+      set3dChromeActive("top");
+    });
+  }
 
   function show2D() {
     if (activeMode === "2D") return;
     activeMode = "2D";
     dispose3D();
     viewport3D.style.display = "none";
+    if (view3dChrome) view3dChrome.hidden = true;
     viewport2D.style.display = "";
     if (geoTb && geoTb.row) geoTb.row.style.display = "";
     if (furnitureRow) furnitureRow.style.display = "";
@@ -591,6 +614,8 @@ export function initFloorPlanViewer() {
 
     viewport2D.style.display = "none";
     viewport3D.style.display = "block";
+    if (view3dChrome) view3dChrome.hidden = false;
+    set3dChromeActive("dollhouse");
     if (geoTb && geoTb.row) geoTb.row.style.display = "none";
     if (furnitureRow) furnitureRow.style.display = "none";
     if (fileTb && fileTb.btn2D) fileTb.btn2D.classList.remove("tool-active");

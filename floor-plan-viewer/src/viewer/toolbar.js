@@ -37,7 +37,7 @@ export function mountFileToolbar(container, handlers) {
   if (handlers.exportJson) addButton("Export JSON", handlers.exportJson);
   if (handlers.analyzeLlm) addButton("Analyze LLM", handlers.analyzeLlm);
   var b2d = addButton("2D View", handlers.show2D);
-  var b3d = addButton("3D View", handlers.show3D);
+  var b3d = addButton("Realistic 3D", handlers.show3D);
 
   container.appendChild(row);
   return { fileInput: inp, row: row, btn2D: b2d, btn3D: b3d };
