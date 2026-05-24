@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { resolveCalibration } from "../lib/calibration.js";
 import { catalogById } from "../lib/catalogSizing.js";
+import { pointInPolygon, polygonArea } from "../lib/geometry.js";
 import {
   createFabricMaterial,
   createFloorMaterial,
@@ -15,15 +16,18 @@ import {
 import { addSceneLighting, disposeLighting } from "./plan3dLighting.js";
 import {
   computeSceneBounds,
+  computeRoomBounds,
   flyToView,
   flyToSideView,
-  getSideViews,
+  getRoomSideViews,
   frameCamera,
   updateCameraTransition,
   cancelCameraTransition,
 } from "./plan3dCamera.js";
 import { createPlan3DInteraction } from "./plan3dInteraction.js";
 import { normToWorld } from "./plan3dMove.js";
+import { getRoomMeasurementDisplay } from "./planTools.js";
+import { hideTooltip, showRoomTooltip } from "./tooltip.js";
 
 var scene, camera, renderer, controls;
 var animFrameId;
@@ -36,10 +40,15 @@ var sceneContent = null;
 var planToWorld = null;
 var sceneMetrics = { wReal: 10, hReal: 10 };
 var furnitureGroups = [];
+var roomFloorMeshes = [];
 var interaction = null;
 var onFurnitureMovedCb = null;
-var sidePanelBuilt = false;
+var selectedSideRoom = null;
+var hoveredSideRoom = null;
+var selectedRoomBounds = null;
 var activeSideIndex = -1;
+var calibrationState3d = null;
+var planImageSize3d = { width: 1000, height: 1000 };
 
 function disposeSceneGraph(root) {
   if (!root) return;
@@ -111,10 +120,19 @@ export function init3D(container, data, planImage) {
     getFurnitureGroups: function () {
       return furnitureGroups;
     },
+    getRoomFloorMeshes: function () {
+      return roomFloorMeshes;
+    },
+    findRoomAtWorld: findRoomAtWorld,
     bounds: sceneBounds,
     wReal: sceneMetrics.wReal,
     hReal: sceneMetrics.hReal,
     rooms: activePlanData.rooms || [],
+    onRoomSelected: selectSideRoom,
+    onRoomHover: onSideRoomHover,
+    onRoomHoverEnd: onSideRoomHoverEnd,
+    isSidePanelOpen: is3DSidePanelOpen,
+    isSideRoomPickActive: isSideRoomPickActive,
     onFurnitureMoved: function (item) {
       if (onFurnitureMovedCb) onFurnitureMovedCb(item);
     },
@@ -161,7 +179,9 @@ export function exit3DMoveMode() {
 
 function set3dHint(text) {
   var el = document.getElementById("view3d-hint");
-  if (el) el.textContent = text;
+  if (!el) return;
+  el.textContent = text || "";
+  el.hidden = !text;
 }
 
 function syncChromeActive(mode) {
@@ -176,6 +196,11 @@ function syncChromeActive(mode) {
 export function close3DSidePanel() {
   var panel = document.getElementById("view3d-side-panel");
   if (panel) panel.hidden = true;
+  if (containerEl) containerEl.classList.remove("view3d-room-pick");
+  if (interaction) interaction.setSidePickMode(false);
+  document.body.classList.remove("view3d-side-pick-mode");
+  onSideRoomHoverEnd();
+  if (renderer && renderer.domElement) renderer.domElement.style.cursor = "";
 }
 
 export function is3DSidePanelOpen() {
@@ -192,17 +217,26 @@ export function toggle3DSidePanel() {
     return false;
   }
   exit3DMoveMode();
-  if (!sidePanelBuilt) buildSideThumbnails();
   panel.hidden = false;
+  if (containerEl) containerEl.classList.add("view3d-room-pick");
   syncChromeActive("side");
+  if (selectedSideRoom && selectedRoomBounds) {
+    buildSideThumbnails(selectedSideRoom);
+    if (interaction) interaction.setSidePickMode(false);
+    set3dHint(roomLabel(selectedSideRoom) + " — pick a side view");
+  } else {
+    showSidePanelPrompt();
+    if (interaction) interaction.setSidePickMode(true);
+    set3dHint("");
+  }
   return true;
 }
 
 export function flyTo3DSideView(index) {
-  if (!camera || !controls || !sceneBounds) return;
+  if (!camera || !controls || !selectedRoomBounds) return;
   exit3DMoveMode();
   activeSideIndex = index;
-  flyToSideView(camera, controls, sceneBounds, index, 800);
+  flyToSideView(camera, controls, selectedRoomBounds, index, 800);
   if (controls) controls.enabled = false;
   viewMode = "side";
   syncChromeActive("side");
@@ -215,12 +249,145 @@ export function flyTo3DSideView(index) {
   close3DSidePanel();
 }
 
-function buildSideThumbnails() {
+function roomLabel(room) {
+  return room.name || room.id || "Room";
+}
+
+function findRoomAtWorld(wx, wz) {
+  var rooms = (activePlanData && activePlanData.rooms) || [];
+  var wReal = sceneMetrics.wReal;
+  var hReal = sceneMetrics.hReal;
+  var nx = wx / wReal + 0.5;
+  var ny = wz / hReal + 0.5;
+  var best = null;
+  var bestArea = Infinity;
+  rooms.forEach(function (room) {
+    if (!room.polygon || room.polygon.length < 3) return;
+    if (!pointInPolygon(nx, ny, room.polygon)) return;
+    var area = polygonArea(room.polygon);
+    if (area < bestArea) {
+      bestArea = area;
+      best = room;
+    }
+  });
+  return best;
+}
+
+function isSideRoomPickActive() {
+  if (interaction && interaction.isMoveMode()) return false;
+  if (interaction && interaction.isSidePickMode()) return true;
+  return is3DSidePanelOpen();
+}
+
+function clearSideRoomSelection() {
+  selectedSideRoom = null;
+  hoveredSideRoom = null;
+  selectedRoomBounds = null;
+  activeSideIndex = -1;
+  updateRoomFloorHighlight(null, null);
+  onSideRoomHoverEnd();
+  if (interaction) interaction.setSidePickMode(false);
+}
+
+function updateRoomFloorHighlight() {
+  roomFloorMeshes.forEach(function (mesh) {
+    var mat = mesh.material;
+    if (!mat || !mat.emissive) return;
+    mat.emissive.setHex(0x000000);
+    mat.emissiveIntensity = 0;
+  });
+}
+
+function onSideRoomHover(room, e) {
+  if (room === hoveredSideRoom) {
+    var tip = document.getElementById("tip");
+    if (tip && e) {
+      tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 300) + "px";
+      tip.style.top = Math.min(e.clientY + 14, window.innerHeight - 120) + "px";
+    }
+    return;
+  }
+  hoveredSideRoom = room;
+  updateRoomFloorHighlight(hoveredSideRoom, selectedSideRoom);
+  showSidePanelHover(room);
+  var tip = document.getElementById("tip");
+  if (!tip || !room || !e) return;
+  var measure = getRoomMeasurementDisplay(
+    room,
+    planImageSize3d.width,
+    planImageSize3d.height,
+    calibrationState3d
+  );
+  var displayRoom = {
+    name: roomLabel(room),
+    dimensions: room.dimensions,
+    dimensionsText: room.dimensionsText,
+    areaSqFt: room.areaSqFt,
+  };
+  var tipY = e.clientY + 14;
+  if (e.clientY > window.innerHeight - 220) {
+    tipY = e.clientY - 100;
+  }
+  showRoomTooltip(
+    tip,
+    { clientX: e.clientX, clientY: tipY },
+    displayRoom,
+    {
+      dimLine: measure.dimLine,
+      areaLine: measure.areaLine,
+      scaleSummary: calibrationState3d ? calibrationState3d.summary : null,
+    }
+  );
+}
+
+function onSideRoomHoverEnd() {
+  hoveredSideRoom = null;
+  updateRoomFloorHighlight(null, selectedSideRoom);
+  if (interaction && interaction.isSidePickMode() && !selectedSideRoom) {
+    showSidePanelPrompt();
+  }
+  var tip = document.getElementById("tip");
+  if (tip) hideTooltip(tip);
+}
+
+function showSidePanelPrompt() {
   var panel = document.getElementById("view3d-side-panel");
-  if (!panel || !renderer || !camera || !scene) return;
-  sidePanelBuilt = true;
-  panel.innerHTML = "";
-  var views = getSideViews(sceneBounds);
+  if (!panel) return;
+  panel.innerHTML =
+    '<p class="view3d-side-prompt">Click a room floor in the view</p>';
+}
+
+function showSidePanelHover(room) {
+  var panel = document.getElementById("view3d-side-panel");
+  if (!panel || !room || selectedSideRoom) return;
+  panel.innerHTML =
+    '<p class="view3d-side-prompt view3d-side-prompt--hover"><strong>' +
+    roomLabel(room) +
+    "</strong><br>Click to select this room</p>";
+}
+
+function selectSideRoom(room) {
+  if (!room || !planToWorld) return;
+  selectedSideRoom = room;
+  hoveredSideRoom = null;
+  selectedRoomBounds = computeRoomBounds(room, planToWorld);
+  activeSideIndex = -1;
+  updateRoomFloorHighlight(null, selectedSideRoom);
+  onSideRoomHoverEnd();
+  buildSideThumbnails(room);
+  if (interaction) interaction.setSidePickMode(false);
+  set3dHint(roomLabel(room) + " — pick a side view");
+  var panel = document.getElementById("view3d-side-panel");
+  if (panel) panel.hidden = false;
+  syncChromeActive("side");
+}
+
+function buildSideThumbnails(room) {
+  var panel = document.getElementById("view3d-side-panel");
+  if (!panel || !renderer || !camera || !scene || !room || !planToWorld) return;
+  var bounds = computeRoomBounds(room, planToWorld);
+  selectedRoomBounds = bounds;
+  var views = getRoomSideViews(bounds);
   var sW = renderer.domElement.width;
   var sH = renderer.domElement.height;
   var sP = camera.position.clone();
@@ -228,6 +395,16 @@ function buildSideThumbnails() {
   var sA = camera.aspect;
   var TW = 185;
   var TH = 115;
+
+  panel.innerHTML = "";
+  var header = document.createElement("div");
+  header.className = "view3d-side-header";
+  header.textContent = roomLabel(room);
+  panel.appendChild(header);
+
+  var thumbs = document.createElement("div");
+  thumbs.className = "view3d-side-thumbs";
+  panel.appendChild(thumbs);
 
   views.forEach(function (sv, idx) {
     renderer.setSize(TW, TH, false);
@@ -247,7 +424,7 @@ function buildSideThumbnails() {
     card.addEventListener("click", function () {
       flyTo3DSideView(idx);
     });
-    panel.appendChild(card);
+    thumbs.appendChild(card);
   });
 
   renderer.setSize(sW, sH, false);
@@ -263,6 +440,7 @@ function buildSideThumbnails() {
  */
 export function set3DViewMode(mode) {
   close3DSidePanel();
+  clearSideRoomSelection();
   exit3DMoveMode();
   viewMode = mode === "top" ? "top" : "dollhouse";
   syncChromeActive(viewMode);
@@ -278,8 +456,8 @@ export function dispose3D() {
   cancelCameraTransition();
   close3DSidePanel();
   exit3DMoveMode();
-  sidePanelBuilt = false;
-  activeSideIndex = -1;
+  clearSideRoomSelection();
+  roomFloorMeshes = [];
   if (interaction) {
     interaction.dispose();
     interaction = null;
@@ -411,6 +589,8 @@ function buildSceneGeometry() {
   var imgH = activePlanImage ? activePlanImage.naturalHeight || 1000 : 1000;
 
   var cal = resolveCalibration(activePlanData.calibration, imgW, imgH);
+  calibrationState3d = cal;
+  planImageSize3d = { width: imgW, height: imgH };
   var mpp = cal ? cal.metersPerPixel : 12 / Math.max(imgW, imgH);
 
   var wReal = imgW * mpp;
@@ -427,6 +607,7 @@ function buildSceneGeometry() {
   sceneMetrics = { wReal: wReal, hReal: hReal };
   sceneBounds = computeSceneBounds(activePlanData.rooms || [], toWorld);
   furnitureGroups = [];
+  roomFloorMeshes = [];
 
   var wallMat = createWallMaterial();
   var matFr = createWindowFrameMaterial();
@@ -452,6 +633,9 @@ function buildSceneGeometry() {
     floorMesh.rotation.x = -Math.PI / 2;
     floorMesh.position.y = 0.005;
     floorMesh.receiveShadow = true;
+    floorMesh.userData.room = room;
+    floorMesh.userData.isRoomFloor = true;
+    roomFloorMeshes.push(floorMesh);
     sceneContent.add(floorMesh);
 
     addRoomWindow(room, toWorld, wallHeight, matFr, matG, sceneContent);

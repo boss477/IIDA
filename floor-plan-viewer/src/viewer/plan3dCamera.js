@@ -62,36 +62,73 @@ function easeInOut(t) {
 }
 
 /**
+ * @param {{ polygon?: Array<{x:number,y:number}> }} room
+ * @param {(pt: {x:number,y:number}) => {x:number,z:number}} toWorld
+ */
+export function computeRoomBounds(room, toWorld) {
+  var minX = Infinity;
+  var maxX = -Infinity;
+  var minZ = Infinity;
+  var maxZ = -Infinity;
+  var poly = room && room.polygon;
+  if (!poly || poly.length < 3) {
+    return {
+      minX: -2,
+      maxX: 2,
+      minZ: -2,
+      maxZ: 2,
+      centerX: 0,
+      centerZ: 0,
+      span: 4,
+    };
+  }
+  poly.forEach(function (pt) {
+    var w = toWorld(pt);
+    minX = Math.min(minX, w.x);
+    maxX = Math.max(maxX, w.x);
+    minZ = Math.min(minZ, w.z);
+    maxZ = Math.max(maxZ, w.z);
+  });
+  var centerX = (minX + maxX) / 2;
+  var centerZ = (minZ + maxZ) / 2;
+  var span = Math.max(maxX - minX, maxZ - minZ, 1.5);
+  return {
+    minX: minX,
+    maxX: maxX,
+    minZ: minZ,
+    maxZ: maxZ,
+    centerX: centerX,
+    centerZ: centerZ,
+    span: span,
+  };
+}
+
+/**
+ * Three elevation thumbnails per room (walls aligned to room AABB).
  * @param {{ minX: number, maxX: number, minZ: number, maxZ: number, centerX: number, centerZ: number, span: number }} bounds
  * @returns {Array<{ pos: number[], look: number[], label: string }>}
  */
-export function getSideViews(bounds) {
-  var span = bounds.span;
+export function getRoomSideViews(bounds) {
   var cx = bounds.centerX;
   var cz = bounds.centerZ;
-  var d = Math.max(span * 0.55, 2.5);
-  var eyeY = 1.65;
-  var lookY = 1.5;
+  var d = Math.max(bounds.span * 0.65, 1.6);
+  var eyeY = 1.55;
+  var lookY = 1.35;
   return [
     {
-      label: "Left",
+      label: "Side A",
       pos: [bounds.minX - d, eyeY, cz],
       look: [cx, lookY, cz],
     },
     {
-      label: "Right",
+      label: "Side B",
       pos: [bounds.maxX + d, eyeY, cz],
       look: [cx, lookY, cz],
     },
     {
-      label: "Back",
+      label: "Side C",
       pos: [cx, eyeY, bounds.minZ - d],
       look: [cx, lookY, cz],
-    },
-    {
-      label: "Corner",
-      pos: [bounds.minX - d * 0.85, eyeY, bounds.maxZ + d * 0.35],
-      look: [cx + span * 0.15, lookY, cz - span * 0.12],
     },
   ];
 }
@@ -131,7 +168,7 @@ export function flyToView(camera, controls, bounds, mode, durationMs) {
  * @param {number} [durationMs]
  */
 export function flyToSideView(camera, controls, bounds, sideIndex, durationMs) {
-  var views = getSideViews(bounds);
+  var views = getRoomSideViews(bounds);
   var sv = views[sideIndex];
   if (!sv) return;
   flyToPosition(

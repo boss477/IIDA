@@ -1,6 +1,6 @@
 #tip {
   position: fixed;
-  z-index: 50;
+  z-index: 200;
   max-width: 280px;
   padding: 12px 14px;
   border-radius: 12px;

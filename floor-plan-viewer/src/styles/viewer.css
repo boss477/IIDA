@@ -268,6 +268,43 @@ button:hover {
 }
 #view3d-side-panel:not([hidden]) {
   display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.view3d-side-prompt {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #555;
+  white-space: nowrap;
+  text-align: center;
+}
+.view3d-side-prompt--hover {
+  color: #1e293b;
+}
+.view3d-side-prompt--hover strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+.view3d-side-header {
+  font-size: 14px;
+  font-weight: 700;
+  color: #111;
+  margin-bottom: 10px;
+  text-align: center;
+}
+.view3d-side-thumbs {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+body.view3d-side-pick-mode #viewport3d canvas {
+  cursor: crosshair;
+}
+#viewport3d.view3d-room-pick canvas {
+  cursor: crosshair;
 }
 .view3d-tcard {
   width: 185px;
