@@ -62,6 +62,41 @@ function easeInOut(t) {
 }
 
 /**
+ * @param {{ minX: number, maxX: number, minZ: number, maxZ: number, centerX: number, centerZ: number, span: number }} bounds
+ * @returns {Array<{ pos: number[], look: number[], label: string }>}
+ */
+export function getSideViews(bounds) {
+  var span = bounds.span;
+  var cx = bounds.centerX;
+  var cz = bounds.centerZ;
+  var d = Math.max(span * 0.55, 2.5);
+  var eyeY = 1.65;
+  var lookY = 1.5;
+  return [
+    {
+      label: "Left",
+      pos: [bounds.minX - d, eyeY, cz],
+      look: [cx, lookY, cz],
+    },
+    {
+      label: "Right",
+      pos: [bounds.maxX + d, eyeY, cz],
+      look: [cx, lookY, cz],
+    },
+    {
+      label: "Back",
+      pos: [cx, eyeY, bounds.minZ - d],
+      look: [cx, lookY, cz],
+    },
+    {
+      label: "Corner",
+      pos: [bounds.minX - d * 0.85, eyeY, bounds.maxZ + d * 0.35],
+      look: [cx + span * 0.15, lookY, cz - span * 0.12],
+    },
+  ];
+}
+
+/**
  * @param {THREE.PerspectiveCamera} camera
  * @param {import("three/examples/jsm/controls/OrbitControls.js").OrbitControls} controls
  * @param {{ centerX: number, centerZ: number, span: number }} bounds
@@ -85,6 +120,37 @@ export function flyToView(camera, controls, bounds, mode, durationMs) {
     toLook = new THREE.Vector3(cx, lookY, cz);
   }
 
+  flyToPosition(camera, controls, toPos, toLook, durationMs);
+}
+
+/**
+ * @param {THREE.PerspectiveCamera} camera
+ * @param {import("three/examples/jsm/controls/OrbitControls.js").OrbitControls} controls
+ * @param {{ minX: number, maxX: number, minZ: number, maxZ: number, centerX: number, centerZ: number, span: number }} bounds
+ * @param {number} sideIndex
+ * @param {number} [durationMs]
+ */
+export function flyToSideView(camera, controls, bounds, sideIndex, durationMs) {
+  var views = getSideViews(bounds);
+  var sv = views[sideIndex];
+  if (!sv) return;
+  flyToPosition(
+    camera,
+    controls,
+    new THREE.Vector3(sv.pos[0], sv.pos[1], sv.pos[2]),
+    new THREE.Vector3(sv.look[0], sv.look[1], sv.look[2]),
+    durationMs != null ? durationMs : 800
+  );
+}
+
+/**
+ * @param {THREE.PerspectiveCamera} camera
+ * @param {import("three/examples/jsm/controls/OrbitControls.js").OrbitControls} controls
+ * @param {THREE.Vector3} toPos
+ * @param {THREE.Vector3} toLook
+ * @param {number} [durationMs]
+ */
+export function flyToPosition(camera, controls, toPos, toLook, durationMs) {
   _transition = {
     active: true,
     fromPos: camera.position.clone(),

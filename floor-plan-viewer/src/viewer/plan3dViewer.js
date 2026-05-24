@@ -16,10 +16,14 @@ import { addSceneLighting, disposeLighting } from "./plan3dLighting.js";
 import {
   computeSceneBounds,
   flyToView,
+  flyToSideView,
+  getSideViews,
   frameCamera,
   updateCameraTransition,
   cancelCameraTransition,
 } from "./plan3dCamera.js";
+import { createPlan3DInteraction } from "./plan3dInteraction.js";
+import { normToWorld } from "./plan3dMove.js";
 
 var scene, camera, renderer, controls;
 var animFrameId;
@@ -30,6 +34,12 @@ var sceneBounds = null;
 var viewMode = "dollhouse";
 var sceneContent = null;
 var planToWorld = null;
+var sceneMetrics = { wReal: 10, hReal: 10 };
+var furnitureGroups = [];
+var interaction = null;
+var onFurnitureMovedCb = null;
+var sidePanelBuilt = false;
+var activeSideIndex = -1;
 
 function disposeSceneGraph(root) {
   if (!root) return;
@@ -93,20 +103,169 @@ export function init3D(container, data, planImage) {
     frameCamera(camera, controls, sceneBounds, viewMode);
   }
 
+  interaction = createPlan3DInteraction({
+    renderer: renderer,
+    camera: camera,
+    controls: controls,
+    scene: scene,
+    getFurnitureGroups: function () {
+      return furnitureGroups;
+    },
+    bounds: sceneBounds,
+    wReal: sceneMetrics.wReal,
+    hReal: sceneMetrics.hReal,
+    rooms: activePlanData.rooms || [],
+    onFurnitureMoved: function (item) {
+      if (onFurnitureMovedCb) onFurnitureMovedCb(item);
+    },
+  });
+
+  syncChromeActive(viewMode);
+
   function animate() {
     animFrameId = requestAnimationFrame(animate);
     var transitioning = updateCameraTransition(camera);
-    if (!transitioning) controls.update();
+    if (!transitioning && (!interaction || !interaction.isMoveMode())) controls.update();
+    if (interaction) interaction.updateHelper();
     renderer.render(scene, camera);
   }
   animate();
+}
+
+/** @param {(item: object) => void} cb */
+export function set3DFurnitureMovedCallback(cb) {
+  onFurnitureMovedCb = cb;
+}
+
+export function toggle3DMoveMode() {
+  if (!interaction) return false;
+  if (interaction.isMoveMode()) {
+    interaction.exitMoveMode();
+    set3dHint("Click furniture to select");
+    syncChromeActive("dollhouse");
+    return false;
+  }
+  close3DSidePanel();
+  interaction.enterMoveMode();
+  set3dHint("Drag furniture · snaps to walls");
+  syncChromeActive("move");
+  return true;
+}
+
+export function exit3DMoveMode() {
+  if (interaction && interaction.isMoveMode()) {
+    interaction.exitMoveMode();
+    set3dHint("Click furniture to select");
+  }
+}
+
+function set3dHint(text) {
+  var el = document.getElementById("view3d-hint");
+  if (el) el.textContent = text;
+}
+
+function syncChromeActive(mode) {
+  var ids = ["btn3d-dollhouse", "btn3d-top", "btn3d-side", "btn3d-move"];
+  var modes = ["dollhouse", "top", "side", "move"];
+  ids.forEach(function (id, i) {
+    var el = document.getElementById(id);
+    if (el) el.classList.toggle("view3d-btn--active", modes[i] === mode);
+  });
+}
+
+export function close3DSidePanel() {
+  var panel = document.getElementById("view3d-side-panel");
+  if (panel) panel.hidden = true;
+}
+
+export function is3DSidePanelOpen() {
+  var panel = document.getElementById("view3d-side-panel");
+  return !!(panel && !panel.hidden);
+}
+
+export function toggle3DSidePanel() {
+  var panel = document.getElementById("view3d-side-panel");
+  if (!panel || !sceneBounds) return false;
+  if (is3DSidePanelOpen()) {
+    close3DSidePanel();
+    syncChromeActive(viewMode === "top" ? "top" : viewMode === "side" ? "side" : "dollhouse");
+    return false;
+  }
+  exit3DMoveMode();
+  if (!sidePanelBuilt) buildSideThumbnails();
+  panel.hidden = false;
+  syncChromeActive("side");
+  return true;
+}
+
+export function flyTo3DSideView(index) {
+  if (!camera || !controls || !sceneBounds) return;
+  exit3DMoveMode();
+  activeSideIndex = index;
+  flyToSideView(camera, controls, sceneBounds, index, 800);
+  if (controls) controls.enabled = false;
+  viewMode = "side";
+  syncChromeActive("side");
+  var panel = document.getElementById("view3d-side-panel");
+  if (panel) {
+    panel.querySelectorAll(".view3d-tcard").forEach(function (card, i) {
+      card.classList.toggle("view3d-tcard--active", i === index);
+    });
+  }
+  close3DSidePanel();
+}
+
+function buildSideThumbnails() {
+  var panel = document.getElementById("view3d-side-panel");
+  if (!panel || !renderer || !camera || !scene) return;
+  sidePanelBuilt = true;
+  panel.innerHTML = "";
+  var views = getSideViews(sceneBounds);
+  var sW = renderer.domElement.width;
+  var sH = renderer.domElement.height;
+  var sP = camera.position.clone();
+  var sT = controls.target.clone();
+  var sA = camera.aspect;
+  var TW = 185;
+  var TH = 115;
+
+  views.forEach(function (sv, idx) {
+    renderer.setSize(TW, TH, false);
+    camera.position.set(sv.pos[0], sv.pos[1], sv.pos[2]);
+    camera.aspect = TW / TH;
+    var lt = new THREE.Vector3(sv.look[0], sv.look[1], sv.look[2]);
+    camera.lookAt(lt);
+    controls.target.copy(lt);
+    camera.updateProjectionMatrix();
+    renderer.render(scene, camera);
+    var url = renderer.domElement.toDataURL("image/jpeg", 0.88);
+    var card = document.createElement("button");
+    card.type = "button";
+    card.className = "view3d-tcard" + (idx === activeSideIndex ? " view3d-tcard--active" : "");
+    card.title = sv.label;
+    card.innerHTML = '<img src="' + url + '" alt="' + sv.label + ' elevation">';
+    card.addEventListener("click", function () {
+      flyTo3DSideView(idx);
+    });
+    panel.appendChild(card);
+  });
+
+  renderer.setSize(sW, sH, false);
+  camera.position.copy(sP);
+  camera.aspect = sA;
+  controls.target.copy(sT);
+  camera.updateProjectionMatrix();
+  if (containerEl) resize3D();
 }
 
 /**
  * @param {"dollhouse"|"top"} mode
  */
 export function set3DViewMode(mode) {
+  close3DSidePanel();
+  exit3DMoveMode();
   viewMode = mode === "top" ? "top" : "dollhouse";
+  syncChromeActive(viewMode);
   if (!camera || !controls || !sceneBounds) return;
   flyToView(camera, controls, sceneBounds, viewMode, 900);
   if (controls) controls.enabled = false;
@@ -117,6 +276,15 @@ export function set3DViewMode(mode) {
  */
 export function dispose3D() {
   cancelCameraTransition();
+  close3DSidePanel();
+  exit3DMoveMode();
+  sidePanelBuilt = false;
+  activeSideIndex = -1;
+  if (interaction) {
+    interaction.dispose();
+    interaction = null;
+  }
+  furnitureGroups = [];
   if (animFrameId) {
     cancelAnimationFrame(animFrameId);
     animFrameId = null;
@@ -256,7 +424,9 @@ function buildSceneGeometry() {
   }
 
   planToWorld = toWorld;
+  sceneMetrics = { wReal: wReal, hReal: hReal };
   sceneBounds = computeSceneBounds(activePlanData.rooms || [], toWorld);
+  furnitureGroups = [];
 
   var wallMat = createWallMaterial();
   var matFr = createWindowFrameMaterial();
@@ -354,7 +524,9 @@ function buildSceneGeometry() {
     }
 
     var group = new THREE.Group();
-    var wPos = toWorld(item);
+    group.userData.furnitureItem = item;
+    group.userData.isFurniture = true;
+    var wPos = normToWorld({ x: item.x, y: item.y }, wReal, hReal);
     group.position.set(wPos.x, item.z || 0, wPos.z);
     group.rotation.y = -(item.rotationDeg || 0) * Math.PI / 180;
 
@@ -362,7 +534,11 @@ function buildSceneGeometry() {
     if (catalogRow && catalogRow.shape) typeStr = catalogRow.shape + " " + typeStr;
 
     addFurnitureMeshes(group, typeStr, item, wM, dM, hM);
+    group.traverse(function (c) {
+      if (c.isMesh) c.userData.furnitureGroup = group;
+    });
     sceneContent.add(group);
+    furnitureGroups.push(group);
   });
 }
 

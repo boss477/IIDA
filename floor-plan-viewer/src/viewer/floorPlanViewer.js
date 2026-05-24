@@ -35,7 +35,15 @@ import { createGeometryEditor } from "./geometryEditor.js";
 import { mountFileToolbar, mountGeometryToolbar } from "./toolbar.js";
 import { getRoomMeasurementDisplay } from "./planTools.js";
 import { syncOverlayToImage } from "../lib/coordinates.js";
-import { init3D, dispose3D, resize3D, set3DViewMode } from "./plan3dViewer.js";
+import {
+  init3D,
+  dispose3D,
+  resize3D,
+  set3DViewMode,
+  set3DFurnitureMovedCallback,
+  toggle3DSidePanel,
+  toggle3DMoveMode,
+} from "./plan3dViewer.js";
 
 var PLAN_SIZE = { width: 1000, height: 1000 };
 
@@ -570,25 +578,33 @@ export function initFloorPlanViewer() {
   var view3dChrome = document.getElementById("view3d-chrome");
   var btn3dDollhouse = document.getElementById("btn3d-dollhouse");
   var btn3dTop = document.getElementById("btn3d-top");
-
-  function set3dChromeActive(mode) {
-    if (!btn3dDollhouse || !btn3dTop) return;
-    btn3dDollhouse.classList.toggle("view3d-btn--active", mode === "dollhouse");
-    btn3dTop.classList.toggle("view3d-btn--active", mode === "top");
-  }
+  var btn3dSide = document.getElementById("btn3d-side");
+  var btn3dMove = document.getElementById("btn3d-move");
 
   if (btn3dDollhouse) {
     btn3dDollhouse.addEventListener("click", function () {
       set3DViewMode("dollhouse");
-      set3dChromeActive("dollhouse");
     });
   }
   if (btn3dTop) {
     btn3dTop.addEventListener("click", function () {
       set3DViewMode("top");
-      set3dChromeActive("top");
     });
   }
+  if (btn3dSide) {
+    btn3dSide.addEventListener("click", function () {
+      toggle3DSidePanel();
+    });
+  }
+  if (btn3dMove) {
+    btn3dMove.addEventListener("click", function () {
+      toggle3DMoveMode();
+    });
+  }
+
+  set3DFurnitureMovedCallback(function () {
+    /* positions already written to data.furniture items */
+  });
 
   function show2D() {
     if (activeMode === "2D") return;
@@ -615,7 +631,6 @@ export function initFloorPlanViewer() {
     viewport2D.style.display = "none";
     viewport3D.style.display = "block";
     if (view3dChrome) view3dChrome.hidden = false;
-    set3dChromeActive("dollhouse");
     if (geoTb && geoTb.row) geoTb.row.style.display = "none";
     if (furnitureRow) furnitureRow.style.display = "none";
     if (fileTb && fileTb.btn2D) fileTb.btn2D.classList.remove("tool-active");

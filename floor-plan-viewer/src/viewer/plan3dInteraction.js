@@ -1,0 +1,179 @@
+import * as THREE from "three";
+import { resolvePosition3D, applyWorldPositionToItem } from "./plan3dMove.js";
+
+var FLOOR_PLANE = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+var _dragPt = new THREE.Vector3();
+
+/**
+ * @param {object} opts
+ * @param {THREE.WebGLRenderer} opts.renderer
+ * @param {THREE.PerspectiveCamera} opts.camera
+ * @param {import("three/examples/jsm/controls/OrbitControls.js").OrbitControls} opts.controls
+ * @param {THREE.Scene} opts.scene
+ * @param {() => THREE.Group[]} opts.getFurnitureGroups
+ * @param {{ minX: number, maxX: number, minZ: number, maxZ: number }} opts.bounds
+ * @param {number} opts.wReal
+ * @param {number} opts.hReal
+ * @param {Array} opts.rooms
+ * @param {(item: object) => void} [opts.onFurnitureMoved]
+ */
+export function createPlan3DInteraction(opts) {
+  var raycaster = new THREE.Raycaster();
+  var mouse2 = new THREE.Vector2();
+  var moveMode = false;
+  var isDragging = false;
+  var dragTarget = null;
+  var dragOX = 0;
+  var dragOZ = 0;
+  var selected = null;
+  var boxHelper = new THREE.BoxHelper(new THREE.Object3D(), 0xffcc00);
+  boxHelper.material.linewidth = 2;
+  boxHelper.visible = false;
+  opts.scene.add(boxHelper);
+
+  var dom = opts.renderer.domElement;
+
+  function getNDC(e) {
+    var r = dom.getBoundingClientRect();
+    return {
+      x: ((e.clientX - r.left) / r.width) * 2 - 1,
+      y: -(((e.clientY - r.top) / r.height) * 2 - 1),
+    };
+  }
+
+  function pickFurniture(e) {
+    var nd = getNDC(e);
+    mouse2.set(nd.x, nd.y);
+    raycaster.setFromCamera(mouse2, opts.camera);
+    var meshes = [];
+    opts.getFurnitureGroups().forEach(function (fg) {
+      fg.traverse(function (c) {
+        if (c.isMesh) meshes.push(c);
+      });
+    });
+    var hits = raycaster.intersectObjects(meshes);
+    return hits.length ? hits[0].object.userData.furnitureGroup : null;
+  }
+
+  function floorHit(e) {
+    var nd = getNDC(e);
+    mouse2.set(nd.x, nd.y);
+    raycaster.setFromCamera(mouse2, opts.camera);
+    if (!raycaster.ray.intersectPlane(FLOOR_PLANE, _dragPt)) return null;
+    return _dragPt;
+  }
+
+  function selectGroup(grp) {
+    selected = grp;
+    boxHelper.setFromObject(grp);
+    boxHelper.visible = true;
+    document.body.classList.add("view3d-has-selection");
+  }
+
+  function deselect() {
+    selected = null;
+    boxHelper.visible = false;
+    document.body.classList.remove("view3d-has-selection");
+  }
+
+  function onPointerDown(e) {
+    if (!moveMode) return;
+    var grp = pickFurniture(e);
+    if (!grp) return;
+    var fp = floorHit(e);
+    if (!fp) return;
+    dragOX = grp.position.x - fp.x;
+    dragOZ = grp.position.z - fp.z;
+    dragTarget = grp;
+    isDragging = true;
+    selectGroup(grp);
+    document.body.classList.add("view3d-dragging");
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function onPointerMove(e) {
+    if (!moveMode || !isDragging || !dragTarget) return;
+    var fp = floorHit(e);
+    if (!fp) return;
+    var item = dragTarget.userData.furnitureItem;
+    if (!item) return;
+    var r = resolvePosition3D(
+      dragTarget,
+      fp.x + dragOX,
+      fp.z + dragOZ,
+      opts.bounds,
+      opts.getFurnitureGroups()
+    );
+    dragTarget.position.set(r.x, dragTarget.position.y, r.z);
+    applyWorldPositionToItem(
+      dragTarget,
+      item,
+      r.x,
+      r.z,
+      opts.wReal,
+      opts.hReal,
+      opts.rooms
+    );
+    boxHelper.update();
+    if (opts.onFurnitureMoved) opts.onFurnitureMoved(item);
+  }
+
+  function onPointerUp() {
+    if (!moveMode || !isDragging) return;
+    isDragging = false;
+    dragTarget = null;
+    document.body.classList.remove("view3d-dragging");
+  }
+
+  function onClick(e) {
+    if (moveMode) return;
+    var grp = pickFurniture(e);
+    if (grp) selectGroup(grp);
+    else deselect();
+  }
+
+  dom.addEventListener("mousedown", onPointerDown);
+  dom.addEventListener("mousemove", onPointerMove);
+  dom.addEventListener("mouseup", onPointerUp);
+  dom.addEventListener("click", onClick);
+
+  opts.controls.addEventListener("start", function () {
+    if (moveMode) return;
+  });
+
+  return {
+    enterMoveMode: function () {
+      moveMode = true;
+      opts.controls.enabled = false;
+      document.body.classList.add("view3d-move-mode");
+    },
+    exitMoveMode: function () {
+      moveMode = false;
+      isDragging = false;
+      dragTarget = null;
+      opts.controls.enabled = true;
+      document.body.classList.remove("view3d-move-mode", "view3d-dragging");
+    },
+    isMoveMode: function () {
+      return moveMode;
+    },
+    getSelected: function () {
+      return selected;
+    },
+    deselect: deselect,
+    updateHelper: function () {
+      if (selected) boxHelper.update();
+    },
+    dispose: function () {
+      dom.removeEventListener("mousedown", onPointerDown);
+      dom.removeEventListener("mousemove", onPointerMove);
+      dom.removeEventListener("mouseup", onPointerUp);
+      dom.removeEventListener("click", onClick);
+      opts.scene.remove(boxHelper);
+      boxHelper.geometry.dispose();
+      deselect();
+      document.body.classList.remove("view3d-move-mode", "view3d-dragging", "view3d-has-selection");
+    },
+  };
+}

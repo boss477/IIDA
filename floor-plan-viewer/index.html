@@ -19,6 +19,8 @@
         </div>
       </div>
       <div id="viewport3d" style="display: none;">
+        <div id="view3d-hint">Click furniture to select</div>
+        <div id="view3d-side-panel" hidden></div>
         <div id="view3d-chrome" hidden>
           <div id="view3d-bar">
             <button type="button" class="view3d-btn view3d-btn--active" id="btn3d-dollhouse" data-mode="dollhouse">
@@ -27,6 +29,14 @@
             <span class="view3d-sep"></span>
             <button type="button" class="view3d-btn" id="btn3d-top" data-mode="top">
               Top view
+            </button>
+            <span class="view3d-sep"></span>
+            <button type="button" class="view3d-btn" id="btn3d-side" data-mode="side">
+              Side views ▾
+            </button>
+            <span class="view3d-sep"></span>
+            <button type="button" class="view3d-btn" id="btn3d-move" data-mode="move">
+              Move
             </button>
           </div>
         </div>
