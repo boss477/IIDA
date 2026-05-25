@@ -1,84 +1,129 @@
-# Floor plan viewer (Vite + vanilla JS)
+# Floor plan viewer
 
-Implements the **Production floor-plan viewer** plan: **Vite**, **vanilla ES modules**, **plain CSS** (no Tailwind/React/TS required), **SVG** overlay with a pixel-based `viewBox="0 0 naturalWidth naturalHeight"` while JSON stays normalized `0–1`, **letterbox-aware** pointer mapping + **ray-casting** hit tests ([`src/lib/geometry.js`](src/lib/geometry.js)), zoom/pan/fullscreen, premium tooltip.
+Vite + vanilla JS app: **2D SVG floor plans** from vision JSON, plus **realistic 3D** (Three.js r184) for any room shape in the analysis.
+
+## Features
+
+### 2D
+
+- Pan, zoom, fullscreen
+- Room polygons, walls, doors/windows (when present in JSON)
+- Calibration / scale (meters from reference segments)
+- Furniture drag, rotate, catalog **Replace with**, sofa color
+- Geometry editor: draw rooms, measure, undo
+- Tooltips with room dimensions and area (when calibrated)
+- Export JSON after edits
+
+### Realistic 3D
+
+Toggle **Realistic 3D** in the toolbar.
+
+| Control | Behavior |
+|---------|----------|
+| **Dollhouse** | Angled overview of full plan |
+| **Top view** | Orthographic-style top-down |
+| **Side views** | Click a room floor → 3 elevation thumbnails for that room |
+| **Move** | Drag furniture on floor; snaps to bounds and other pieces; updates `furniture[].x/y` in memory |
+
+Rendering (from IKEA-style reference, adapted to AI polygons):
+
+- ACES tone mapping, soft shadows
+- Procedural floor/wall textures per room `flooring`
+- Spot lights scaled by room area (1 / 2 / 4 per room)
+- Glass window on longest wall edge per room
+- Procedural sofa / bed / table shapes sized from catalog mm fields
+
+Not in 3D yet: Bloom, real-time SSAO, GLB models, price panel, save 3D moves to Supabase.
 
 ## Quick start
 
 ```bash
 npm install
+cp .env.example .env
 npm start
 ```
 
-Open `http://127.0.0.1:5173`. **Load sample JSON** loads [`public/fixtures/sample-plan.json`](public/fixtures/sample-plan.json) (rooms-only v1). **Open image** and pick a matching floor plan to see overlays line up.
+Open http://127.0.0.1:5173
 
-Phase 2 sample (catalog + sprites): [`public/fixtures/sample-plan-phase2.json`](public/fixtures/sample-plan-phase2.json) — swap the fetch path in [`src/viewer/floorPlanViewer.js`](src/viewer/floorPlanViewer.js) or merge data as needed.
+- **Load sample JSON** — [`public/fixtures/sample-plan.json`](public/fixtures/sample-plan.json) (multi-room apartment)
+- **Open image** — then vision runs if API keys are configured
+
+Phase 2 fixture (catalog URLs in JSON): [`public/fixtures/sample-plan-phase2.json`](public/fixtures/sample-plan-phase2.json)
+
+## Environment
+
+Copy [`.env.example`](.env.example) to `.env` / `.env.local`.
+
+| Variable | Purpose |
+|----------|---------|
+| `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | Catalog + optional plan upload |
+| `VITE_SUPABASE_STORAGE=1` | Enable **Upload plan (Supabase)** |
+| `VITE_GEMINI_API_KEY` | Gemini vision |
+| `VITE_FIREWORKS_API_KEY` | Fireworks Kimi vision |
+| `LM_STUDIO_URL` / `LM_STUDIO_MODEL` | Local vision (see `lm_studio.json`) |
+| `VITE_ANALYZE_API` | Proxy analyze server URL |
+
+Supabase catalog table: `shearling_catalog` (column names may be CSV-style on remote; map or add a view for `product_code`, `width_mm`, etc.).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  upload[Upload image]
-  store[Cloudinary or Supabase Storage]
-  api[Analyze API]
-  vision[Vision model structured output]
-  client[Vanilla JS viewer]
-  upload --> store
-  store --> api
-  api --> vision
-  vision --> client
-  client --> svg[SVG polygons]
-  client --> tooltip[Tooltip]
+  img[Plan image]
+  vision[Vision API]
+  json[Analysis JSON]
+  viewer2d[2D SVG viewer]
+  viewer3d[3D Three.js]
+  img --> vision
+  vision --> json
+  json --> viewer2d
+  json --> viewer3d
 ```
 
-v1 focuses on **rooms**; the editable **furniture** layer is composed when `furniture` / `furniture_catalog` exist in JSON. Use **Export JSON** after moving/replacing furniture to download the current edited analysis.
-
-## Layout (plan)
+### Key modules
 
 | Path | Role |
 |------|------|
-| [`src/main.js`](src/main.js) | Bootstrap |
-| [`src/viewer/floorPlanViewer.js`](src/viewer/floorPlanViewer.js) | State, pan/zoom, ray-cast hover |
-| [`src/viewer/roomOverlay.js`](src/viewer/roomOverlay.js) | Room polygons |
-| [`src/viewer/furnitureLayer.js`](src/viewer/furnitureLayer.js) | Phase 2 sprites |
-| [`src/viewer/tooltip.js`](src/viewer/tooltip.js) | Tooltip copy |
-| [`src/viewer/toolbar.js`](src/viewer/toolbar.js) | Toolbar UI |
-| [`src/upload/uploadDropzone.js`](src/upload/uploadDropzone.js) | File input wiring |
-| [`src/lib/coordinates.js`](src/lib/coordinates.js) | Letterbox → normalized |
-| [`src/lib/geometry.js`](src/lib/geometry.js) | `pointInPolygon`, bbox |
-| [`src/services/supabase.js`](src/services/supabase.js) | Storage upload (optional) |
-| [`supabase/migrations/`](supabase/migrations/) | `furniture_catalog`, `floor_plans` |
-
-Copy [`.env.example`](.env.example) to `.env` to show **Upload plan (Supabase)** (requires bucket `floor-plans`). **Cloudinary** can stay optional (see migration `002`).
+| [`src/viewer/floorPlanViewer.js`](src/viewer/floorPlanViewer.js) | App state, 2D/3D toggle, tools |
+| [`src/viewer/plan3dViewer.js`](src/viewer/plan3dViewer.js) | 3D scene build, side views, room pick |
+| [`src/viewer/plan3dMaterials.js`](src/viewer/plan3dMaterials.js) | Floor/wall/fabric materials |
+| [`src/viewer/plan3dLighting.js`](src/viewer/plan3dLighting.js) | Lights + ceiling discs |
+| [`src/viewer/plan3dCamera.js`](src/viewer/plan3dCamera.js) | Dollhouse / top / side cameras |
+| [`src/viewer/plan3dInteraction.js`](src/viewer/plan3dInteraction.js) | Pick, hover tooltip, move mode |
+| [`src/viewer/plan3dMove.js`](src/viewer/plan3dMove.js) | World position + room constraints |
+| [`src/viewer/svgRenderer.js`](src/viewer/svgRenderer.js) | 2D overlay |
+| [`src/services/supabase.js`](src/services/supabase.js) | Storage + catalog fetch |
+| [`supabase/migrations/`](supabase/migrations/) | Schema (`003` = projects / placed_furniture) |
 
 ## Local vision (LM Studio)
 
-After **Open image**, the app calls your model automatically if env is set.
+1. Start LM Studio OpenAI-compatible server.
+2. Set model in [`lm_studio.json`](lm_studio.json) (vision-capable model).
+3. `npm start` — analyze runs after **Open image** when configured.
 
-1. Start LM Studio with the OpenAI-compatible server (use the URL it shows, e.g. `http://10.212.228.25:1234`).
-2. Run `npm start` from the workspace root or from this folder. The Flask app serves both the UI and `/api/analyze` on `http://127.0.0.1:5173`.
-3. **Model and base URL** are read from [`lm_studio.json`](lm_studio.json) (and optional gitignored `lm_studio.local.json`) first, then from `LM_STUDIO_URL` / `LM_STUDIO_MODEL` if a key is missing in those files. That way an old `set LM_STUDIO_MODEL=...` in your shell cannot override the project after you edit the JSON. The toolbar also shows the model name the server is using.
-
-If LM Studio returns **"Model does not support images"**, switch `lm_studio_model` to a **vision / multimodal** model in LM Studio (for example one that explicitly accepts image input there). `qwen/qwen3.5-9b` may be text-only depending on how it is loaded.
-
-```bash
-set LM_STUDIO_URL=http://10.212.228.25:1234/v1
-set LM_STUDIO_MODEL=qwen/qwen3.5-9b
-npm run analyze-server
-```
-
-Then set `VITE_ANALYZE_API=http://127.0.0.1:8787` in `.env.local` and **remove or comment out** `VITE_LM_STUDIO_URL` so the app uses the proxy.
-
-Use **Analyze LLM** to re-run extraction on the current file without re-uploading.
-
-## Analyze API (optional)
-
-Not required for the static fixture UI. To hook LM Studio locally:
+Or run proxy:
 
 ```bash
 npm run analyze-server
 ```
 
-See [`server.mjs`](server.mjs) / [`app.py`](app.py).
+Set `VITE_ANALYZE_API=http://127.0.0.1:8787` in `.env.local`.
+
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm start` | Build + run Flask (`app.py`) on port 5173 |
+| `npm run build` | Production build to `dist/` |
+| `npm run preview` | Preview production build |
+| `npm run analyze-server` | Standalone analyze proxy (`server.mjs`) |
+
+## Planned polish
+
+- Baked `aoMap` on floor materials (cheap contact shadows, no SSAO)
+- Catalog `image_url` / GLB in 3D
+- Budget filter before furniture placement
+- Apply Supabase `003` + save/load projects
 
 ## Build
 
