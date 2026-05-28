@@ -42,3 +42,27 @@ export function showFurnitureTooltip(tipEl, e, label) {
   tipEl.style.left = Math.min(e.clientX + 14, window.innerWidth - 360) + "px";
   tipEl.style.top = Math.min(e.clientY + 14, window.innerHeight - 80) + "px";
 }
+
+/**
+ * Multi-line measurement tooltip (3D furniture / room).
+ * @param {HTMLElement} tipEl
+ * @param {{ clientX: number, clientY: number }} e
+ * @param {string} title
+ * @param {string[]} [detailLines]
+ */
+export function showMeasureTooltip(tipEl, e, title, detailLines) {
+  if (!title) {
+    hideTooltip(tipEl);
+    return;
+  }
+  var html = "<strong>" + title + "</strong>";
+  (detailLines || []).forEach(function (line) {
+    if (line) html += "<br/><span class=\"tip-dim\">" + line + "</span>";
+  });
+  tipEl.innerHTML = html;
+  tipEl.hidden = false;
+  tipEl.style.left = Math.min(e.clientX + 14, window.innerWidth - 360) + "px";
+  var tipY = e.clientY + 14;
+  if (e.clientY > window.innerHeight - 220) tipY = e.clientY - 100;
+  tipEl.style.top = Math.min(tipY, window.innerHeight - 80) + "px";
+}

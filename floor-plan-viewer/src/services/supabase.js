@@ -42,8 +42,9 @@ export async function uploadPlanRaster(file, path) {
   return { publicUrl: pub.data.publicUrl };
 }
 
-var SHEARLING_SELECT =
-  "product_code,product_name,category,keywords,length_mm,width_mm,height_mm,seat_height_mm,arm_height_mm";
+// Note: the current DB table uses spaced column names (e.g. "Product Code").
+// We select * and map with fallbacks so the app works with both schemas.
+var SHEARLING_SELECT = "*";
 
 function shapeFromCategory(category) {
   var c = String(category || "").toLowerCase();
@@ -55,20 +56,36 @@ function shapeFromCategory(category) {
 }
 
 export function mapShearlingRow(row) {
-  var depthMm = row.depth_mm != null ? row.depth_mm : row.length_mm;
+  var productCode = row.product_code != null ? row.product_code : row["Product Code"];
+  var productName = row.product_name != null ? row.product_name : row["Product Name"];
+  var category = row.category != null ? row.category : row["Category"];
+  var keywords = row.keywords != null ? row.keywords : row["Keywords"];
+
+  var widthMm = row.width_mm != null ? row.width_mm : row["Width (mm)"];
+  var depthMmRaw =
+    row.depth_mm != null
+      ? row.depth_mm
+      : row.length_mm != null
+        ? row.length_mm
+        : row["Length / Depth (mm)"];
+  var heightMm = row.height_mm != null ? row.height_mm : row["Height (mm)"];
+
+  var depthMm = depthMmRaw;
   return {
-    id: row.product_code,
-    name: row.product_name + " · " + row.product_code,
-    product_name: row.product_name,
-    category: row.category,
-    keywords: row.keywords,
-    width_mm: row.width_mm != null ? Number(row.width_mm) : null,
+    id: productCode,
+    name: (productName || "") + " · " + (productCode || ""),
+    product_name: productName,
+    category: category,
+    keywords: keywords,
+    width_mm: widthMm != null ? Number(widthMm) : null,
     depth_mm: depthMm != null ? Number(depthMm) : null,
-    height_mm: row.height_mm != null ? Number(row.height_mm) : null,
-    seat_height_mm: row.seat_height_mm != null ? Number(row.seat_height_mm) : null,
+    height_mm: heightMm != null ? Number(heightMm) : null,
+    seat_height_mm:
+      row.seat_height_mm != null ? Number(row.seat_height_mm) : null,
     arm_height_mm: row.arm_height_mm != null ? Number(row.arm_height_mm) : null,
-    shape: shapeFromCategory(row.category),
-    product_code: row.product_code,
+    image_url: row.image_url != null ? row.image_url : row["image_url"],
+    shape: shapeFromCategory(category),
+    product_code: productCode,
   };
 }
 
@@ -78,7 +95,7 @@ export async function fetchShearlingCatalog() {
   var res = await sb
     .from("shearling_catalog")
     .select(SHEARLING_SELECT)
-    .order("product_code", { ascending: true });
+    .order("S.No", { ascending: true });
   if (res.error) throw res.error;
   return (res.data || []).map(mapShearlingRow);
 }

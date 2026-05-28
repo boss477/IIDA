@@ -20,6 +20,12 @@ var _dragPt = new THREE.Vector3();
  * @param {(room: object) => void} [opts.onRoomSelected]
  * @param {(room: object, e: MouseEvent) => void} [opts.onRoomHover]
  * @param {() => void} [opts.onRoomHoverEnd]
+ * @param {(room: object, e: MouseEvent) => void} [opts.onRoomHoverGeneral]
+ * @param {() => void} [opts.onRoomHoverGeneralEnd]
+ * @param {(group: THREE.Group, e: MouseEvent) => void} [opts.onFurnitureHover]
+ * @param {() => void} [opts.onFurnitureHoverEnd]
+ * @param {(group: THREE.Group) => void} [opts.onFurnitureSelect]
+ * @param {() => void} [opts.onFurnitureDeselect]
  * @param {() => boolean} [opts.isSidePanelOpen]
  * @param {() => boolean} [opts.isSideRoomPickActive]
  * @param {(item: object) => void} [opts.onFurnitureMoved]
@@ -113,6 +119,7 @@ export function createPlan3DInteraction(opts) {
     selected = null;
     boxHelper.visible = false;
     document.body.classList.remove("view3d-has-selection");
+    if (opts.onFurnitureDeselect) opts.onFurnitureDeselect();
   }
 
   function onPointerDown(e) {
@@ -126,6 +133,7 @@ export function createPlan3DInteraction(opts) {
     dragTarget = grp;
     isDragging = true;
     selectGroup(grp);
+    if (opts.onFurnitureSelect) opts.onFurnitureSelect(grp);
     document.body.classList.add("view3d-dragging");
     e.preventDefault();
     e.stopPropagation();
@@ -156,21 +164,36 @@ export function createPlan3DInteraction(opts) {
       );
       boxHelper.update();
       if (opts.onFurnitureMoved) opts.onFurnitureMoved(item);
+      if (opts.onFurnitureSelect) opts.onFurnitureSelect(dragTarget);
       return;
     }
 
-    if (!isRoomPickActive()) {
-      dom.style.cursor = "";
+    if (isRoomPickActive()) {
+      var roomSide = pickRoom(e);
+      if (roomSide) {
+        dom.style.cursor = "pointer";
+        if (opts.onRoomHover) opts.onRoomHover(roomSide, e);
+      } else {
+        dom.style.cursor = "crosshair";
+        if (opts.onRoomHoverEnd) opts.onRoomHoverEnd();
+      }
       return;
     }
 
-    var room = pickRoom(e);
-    if (room) {
-      dom.style.cursor = "pointer";
-      if (opts.onRoomHover) opts.onRoomHover(room, e);
+    var grpHover = pickFurniture(e);
+    if (grpHover && opts.onFurnitureHover) {
+      dom.style.cursor = moveMode ? "grab" : "pointer";
+      opts.onFurnitureHover(grpHover, e);
     } else {
-      dom.style.cursor = "crosshair";
-      if (opts.onRoomHoverEnd) opts.onRoomHoverEnd();
+      if (opts.onFurnitureHoverEnd) opts.onFurnitureHoverEnd();
+      var roomGen = pickRoom(e);
+      if (roomGen && opts.onRoomHoverGeneral) {
+        dom.style.cursor = "pointer";
+        opts.onRoomHoverGeneral(roomGen, e);
+      } else {
+        dom.style.cursor = moveMode ? "grab" : "";
+        if (opts.onRoomHoverGeneralEnd) opts.onRoomHoverGeneralEnd();
+      }
     }
   }
 
@@ -192,8 +215,10 @@ export function createPlan3DInteraction(opts) {
       if (sidePickMode) return;
     }
     var grp = pickFurniture(e);
-    if (grp) selectGroup(grp);
-    else deselect();
+    if (grp) {
+      selectGroup(grp);
+      if (opts.onFurnitureSelect) opts.onFurnitureSelect(grp);
+    } else deselect();
   }
 
   dom.addEventListener("mousedown", onPointerDown);

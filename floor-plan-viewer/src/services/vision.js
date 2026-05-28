@@ -249,7 +249,26 @@ function analyzeViaGemini(imageBase64, mimeType) {
  * @param {string} mimeType
  * @param {string} baseUrl proxy base e.g. http://127.0.0.1:8787
  */
+function debugLog(location, message, data, hypothesisId) {
+  // #region agent log
+  fetch("http://127.0.0.1:7288/ingest/366268e5-c3c0-405e-8724-98cf4eb84d21", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "bde2f0" },
+    body: JSON.stringify({
+      sessionId: "bde2f0",
+      location: location,
+      message: message,
+      data: data,
+      hypothesisId: hypothesisId,
+      timestamp: Date.now(),
+      runId: "pre-fix",
+    }),
+  }).catch(function () {});
+  // #endregion
+}
+
 function analyzeViaProxy(imageBase64, mimeType, baseUrl) {
+  debugLog("vision.js:analyzeViaProxy", "proxy fetch start", { baseUrl: baseUrl }, "H2");
   return fetch(baseUrl + "/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -257,13 +276,24 @@ function analyzeViaProxy(imageBase64, mimeType, baseUrl) {
       imageBase64: imageBase64,
       mimeType: mimeType || "image/png",
     }),
-  }).then(function (r) {
-    return r.json().then(function (body) {
-      if (!r.ok) throw new Error((body && body.error) || "Analyze failed: " + r.status);
-      if (body && body.error) throw new Error(String(body.error));
-      return body;
+  })
+    .then(function (r) {
+      return r.json().then(function (body) {
+        if (!r.ok) throw new Error((body && body.error) || "Analyze failed: " + r.status);
+        if (body && body.error) throw new Error(String(body.error));
+        debugLog("vision.js:analyzeViaProxy", "proxy fetch ok", { status: r.status }, "H2");
+        return body;
+      });
+    })
+    .catch(function (err) {
+      debugLog(
+        "vision.js:analyzeViaProxy",
+        "proxy fetch failed",
+        { message: err && err.message, name: err && err.name },
+        "H2"
+      );
+      throw err;
     });
-  });
 }
 
 function openAiVisionBody(modelId, imageBase64, mimeType) {
@@ -327,6 +357,12 @@ function analyzeViaKimi(imageBase64, mimeType) {
     return Promise.reject(new Error("Set VITE_KIMI_API_KEY in .env"));
   }
   var url = fireworksBaseUrl() + "/chat/completions";
+  debugLog(
+    "vision.js:analyzeViaKimi",
+    "direct kimi fetch start",
+    { url: url, origin: typeof window !== "undefined" ? window.location.origin : "none" },
+    "H1"
+  );
   return fetch(url, {
     method: "POST",
     headers: {
@@ -334,12 +370,23 @@ function analyzeViaKimi(imageBase64, mimeType) {
       Authorization: "Bearer " + key,
     },
     body: JSON.stringify(openAiVisionBody(kimiModel(), imageBase64, mimeType)),
-  }).then(function (r) {
-    return r.text().then(function (txt) {
-      if (!r.ok) throw new Error("Kimi: " + r.status + " " + txt.slice(0, 500));
-      return parseOpenAiChatCompletion(txt, "Kimi");
+  })
+    .then(function (r) {
+      return r.text().then(function (txt) {
+        if (!r.ok) throw new Error("Kimi: " + r.status + " " + txt.slice(0, 500));
+        debugLog("vision.js:analyzeViaKimi", "direct kimi ok", { status: r.status }, "H1");
+        return parseOpenAiChatCompletion(txt, "Kimi");
+      });
+    })
+    .catch(function (err) {
+      debugLog(
+        "vision.js:analyzeViaKimi",
+        "direct kimi failed",
+        { message: err && err.message, name: err && err.name },
+        "H1"
+      );
+      throw err;
     });
-  });
 }
 
 /**
@@ -362,21 +409,50 @@ function analyzeViaLmStudio(imageBase64, mimeType, baseUrl, modelId) {
   });
 }
 
+function sameOriginAnalyzeBase() {
+  if (typeof window === "undefined" || !window.location) return "";
+  if (!/^https?:/.test(window.location.protocol)) return "";
+  return String(window.location.origin).replace(/\/$/, "");
+}
+
 /**
- * Priority: Kimi (Fireworks) → Gemini → proxy → LM Studio.
+ * Priority: same-origin proxy (browser) → Kimi → Gemini → proxy URL → LM Studio.
  * @param {string} imageBase64 raw base64 (no data: prefix)
  * @param {string} mimeType
  */
 export function analyzeFloorPlan(imageBase64, mimeType) {
+  var pageOrigin = sameOriginAnalyzeBase();
+  var configuredProxy = analyzeApiUrl();
+  var provider = visionProvider();
+  debugLog(
+    "vision.js:analyzeFloorPlan",
+    "route chosen",
+    {
+      provider: provider,
+      pageOrigin: pageOrigin || null,
+      configuredProxy: configuredProxy || null,
+      hasKimiKey: !!kimiApiKey(),
+      hasGeminiKey: !!geminiApiKey(),
+    },
+    "H3"
+  );
+  if (pageOrigin && (kimiApiKey() || geminiApiKey())) {
+    debugLog(
+      "vision.js:analyzeFloorPlan",
+      "using browser same-origin proxy",
+      { baseUrl: pageOrigin, provider: provider },
+      "H1"
+    );
+    return analyzeViaProxy(imageBase64, mimeType, pageOrigin);
+  }
+  if (configuredProxy) {
+    return analyzeViaProxy(imageBase64, mimeType, configuredProxy);
+  }
   if (kimiApiKey()) {
     return analyzeViaKimi(imageBase64, mimeType);
   }
   if (geminiApiKey()) {
     return analyzeViaGemini(imageBase64, mimeType);
-  }
-  var proxy = analyzeApiUrl();
-  if (proxy) {
-    return analyzeViaProxy(imageBase64, mimeType, proxy);
   }
   var lm = lmStudioUrl();
   if (!lm) {
@@ -398,10 +474,16 @@ export function visionProvider() {
   return null;
 }
 
+function fireworksProviderLabel() {
+  var model = kimiModel();
+  if (model.toLowerCase().indexOf("deepseek") >= 0) return "DeepSeek " + model;
+  return "Fireworks " + model;
+}
+
 /** Human-readable provider for toolbar status. */
 export function visionProviderLabel() {
   var p = visionProvider();
-  if (p === "kimi") return "Kimi " + kimiModel();
+  if (p === "kimi") return fireworksProviderLabel();
   if (p === "gemini") return "Gemini " + geminiModel();
   if (p === "proxy") return "analyze proxy";
   if (p === "lm") return "LM Studio " + lmStudioModel();
@@ -411,7 +493,7 @@ export function visionProviderLabel() {
 /** Message while the model is running. */
 export function visionAnalyzingMessage() {
   var p = visionProvider();
-  if (p === "kimi") return "LLM: analyzing with Kimi (" + kimiModel() + ")...";
+  if (p === "kimi") return "LLM: analyzing with " + fireworksProviderLabel() + "...";
   if (p === "gemini") return "LLM: analyzing with Gemini (" + geminiModel() + ")...";
   if (p === "proxy") return "LLM: analyzing via proxy...";
   if (p === "lm") return "LLM: analyzing with LM Studio...";

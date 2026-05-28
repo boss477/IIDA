@@ -31,6 +31,7 @@ export function mountFileToolbar(container, handlers) {
   if (handlers.uploadSupabase) addButton("Upload plan (Supabase)", handlers.uploadSupabase);
   addButton("Save to DB", handlers.saveToDb);
   addButton("Load from DB", handlers.loadFromDb);
+  if (handlers.toggleCatalog) addButton("Catalog", handlers.toggleCatalog);
   addButton("+", handlers.zoomIn);
   addButton("−", handlers.zoomOut);
   addButton("Reset", handlers.reset);

@@ -25,9 +25,19 @@ import {
   cancelCameraTransition,
 } from "./plan3dCamera.js";
 import { createPlan3DInteraction } from "./plan3dInteraction.js";
+import {
+  createDefaultSofaInstance,
+  isSofaTypeStr,
+  preloadDefaultSofaGlb,
+} from "./plan3dGlb.js";
 import { normToWorld } from "./plan3dMove.js";
 import { getRoomMeasurementDisplay } from "./planTools.js";
-import { hideTooltip, showRoomTooltip } from "./tooltip.js";
+import {
+  catalogRowForItem,
+  getFurnitureMeasurementLines,
+} from "./plan3dMeasure.js";
+import { createPlan3DMeasureOverlay } from "./plan3dMeasureOverlay.js";
+import { hideTooltip, showMeasureTooltip, showRoomTooltip } from "./tooltip.js";
 
 var scene, camera, renderer, controls;
 var animFrameId;
@@ -42,6 +52,7 @@ var sceneMetrics = { wReal: 10, hReal: 10 };
 var furnitureGroups = [];
 var roomFloorMeshes = [];
 var interaction = null;
+var measureOverlay = null;
 var onFurnitureMovedCb = null;
 var selectedSideRoom = null;
 var hoveredSideRoom = null;
@@ -102,6 +113,16 @@ export function init3D(container, data, planImage) {
 
   var lightingStats = null;
   buildSceneGeometry();
+  preloadDefaultSofaGlb()
+    .then(function () {
+      refreshSofaGlbMeshes();
+      if (measureOverlay && interaction && interaction.getSelected()) {
+        measureOverlay.updateForGroup(interaction.getSelected());
+      }
+    })
+    .catch(function (err) {
+      console.warn("Default sofa GLB:", err && err.message ? err.message : err);
+    });
   if (sceneBounds && planToWorld) {
     lightingStats = addSceneLighting(
       scene,
@@ -131,6 +152,12 @@ export function init3D(container, data, planImage) {
     onRoomSelected: selectSideRoom,
     onRoomHover: onSideRoomHover,
     onRoomHoverEnd: onSideRoomHoverEnd,
+    onRoomHoverGeneral: onRoomHoverGeneral,
+    onRoomHoverGeneralEnd: onRoomHoverGeneralEnd,
+    onFurnitureHover: onFurnitureHover3D,
+    onFurnitureHoverEnd: onFurnitureHoverEnd3D,
+    onFurnitureSelect: onFurnitureSelect3D,
+    onFurnitureDeselect: onFurnitureDeselect3D,
     isSidePanelOpen: is3DSidePanelOpen,
     isSideRoomPickActive: isSideRoomPickActive,
     onFurnitureMoved: function (item) {
@@ -138,6 +165,15 @@ export function init3D(container, data, planImage) {
     },
   });
 
+  measureOverlay = createPlan3DMeasureOverlay({
+    scene: scene,
+    camera: camera,
+    container: container,
+    findRoomAtWorld: findRoomAtWorld,
+    planToWorld: planToWorld,
+  });
+
+  set3dHint(default3dHintText());
   syncChromeActive(viewMode);
 
   function animate() {
@@ -146,6 +182,7 @@ export function init3D(container, data, planImage) {
     if (!transitioning && (!interaction || !interaction.isMoveMode())) controls.update();
     if (interaction) interaction.updateHelper();
     renderer.render(scene, camera);
+    if (measureOverlay) measureOverlay.render();
   }
   animate();
 }
@@ -159,13 +196,13 @@ export function toggle3DMoveMode() {
   if (!interaction) return false;
   if (interaction.isMoveMode()) {
     interaction.exitMoveMode();
-    set3dHint("Click furniture to select");
+    set3dHint(default3dHintText());
     syncChromeActive("dollhouse");
     return false;
   }
   close3DSidePanel();
   interaction.enterMoveMode();
-  set3dHint("Drag furniture · snaps to walls");
+  set3dHint(default3dHintText());
   syncChromeActive("move");
   return true;
 }
@@ -173,7 +210,7 @@ export function toggle3DMoveMode() {
 export function exit3DMoveMode() {
   if (interaction && interaction.isMoveMode()) {
     interaction.exitMoveMode();
-    set3dHint("Click furniture to select");
+    set3dHint(default3dHintText());
   }
 }
 
@@ -182,6 +219,97 @@ function set3dHint(text) {
   if (!el) return;
   el.textContent = text || "";
   el.hidden = !text;
+}
+
+function default3dHintText() {
+  if (interaction && interaction.isMoveMode()) {
+    return "Drag furniture · snaps to walls";
+  }
+  return "Hover a room or furniture for measurements";
+}
+
+function furnitureMeasureLines(grp) {
+  if (!grp) return [];
+  var item = grp.userData.furnitureItem;
+  var catalog = (activePlanData && activePlanData.furniture_catalog) || [];
+  var row = catalogRowForItem(catalog, item);
+  var box = new THREE.Box3().setFromObject(grp);
+  var center = new THREE.Vector3();
+  box.getCenter(center);
+  var room = findRoomAtWorld(center.x, center.z);
+  return getFurnitureMeasurementLines(
+    item,
+    row,
+    grp,
+    room,
+    planToWorld,
+    sceneBounds
+  );
+}
+
+function showRoomMeasureTooltip(room, e) {
+  var tip = document.getElementById("tip");
+  if (!tip || !room || !e) return;
+  var measure = getRoomMeasurementDisplay(
+    room,
+    planImageSize3d.width,
+    planImageSize3d.height,
+    calibrationState3d
+  );
+  var displayRoom = {
+    name: roomLabel(room),
+    dimensions: room.dimensions,
+    dimensionsText: room.dimensionsText,
+    areaSqFt: room.areaSqFt,
+  };
+  var tipY = e.clientY + 14;
+  if (e.clientY > window.innerHeight - 220) tipY = e.clientY - 100;
+  showRoomTooltip(
+    tip,
+    { clientX: e.clientX, clientY: tipY },
+    displayRoom,
+    {
+      dimLine: measure.dimLine,
+      areaLine: measure.areaLine,
+      scaleSummary: calibrationState3d ? calibrationState3d.summary : null,
+    }
+  );
+}
+
+function onRoomHoverGeneral(room, e) {
+  showRoomMeasureTooltip(room, e);
+}
+
+function onRoomHoverGeneralEnd() {
+  if (interaction && interaction.getSelected()) return;
+  var tip = document.getElementById("tip");
+  if (tip && !is3DSidePanelOpen()) hideTooltip(tip);
+}
+
+function onFurnitureHover3D(grp, e) {
+  var lines = furnitureMeasureLines(grp);
+  var tip = document.getElementById("tip");
+  if (!tip || !lines.length) return;
+  showMeasureTooltip(tip, e, lines[0], lines.slice(1));
+}
+
+function onFurnitureHoverEnd3D() {
+  if (interaction && interaction.getSelected()) return;
+  var tip = document.getElementById("tip");
+  if (tip) hideTooltip(tip);
+}
+
+function onFurnitureSelect3D(grp) {
+  if (measureOverlay) measureOverlay.updateForGroup(grp);
+  var lines = furnitureMeasureLines(grp);
+  set3dHint(lines.length ? lines.join("\n") : default3dHintText());
+}
+
+function onFurnitureDeselect3D() {
+  if (measureOverlay) measureOverlay.clear();
+  set3dHint(default3dHintText());
+  var tip = document.getElementById("tip");
+  if (tip) hideTooltip(tip);
 }
 
 function syncChromeActive(mode) {
@@ -310,34 +438,7 @@ function onSideRoomHover(room, e) {
   hoveredSideRoom = room;
   updateRoomFloorHighlight(hoveredSideRoom, selectedSideRoom);
   showSidePanelHover(room);
-  var tip = document.getElementById("tip");
-  if (!tip || !room || !e) return;
-  var measure = getRoomMeasurementDisplay(
-    room,
-    planImageSize3d.width,
-    planImageSize3d.height,
-    calibrationState3d
-  );
-  var displayRoom = {
-    name: roomLabel(room),
-    dimensions: room.dimensions,
-    dimensionsText: room.dimensionsText,
-    areaSqFt: room.areaSqFt,
-  };
-  var tipY = e.clientY + 14;
-  if (e.clientY > window.innerHeight - 220) {
-    tipY = e.clientY - 100;
-  }
-  showRoomTooltip(
-    tip,
-    { clientX: e.clientX, clientY: tipY },
-    displayRoom,
-    {
-      dimLine: measure.dimLine,
-      areaLine: measure.areaLine,
-      scaleSummary: calibrationState3d ? calibrationState3d.summary : null,
-    }
-  );
+  showRoomMeasureTooltip(room, e);
 }
 
 function onSideRoomHoverEnd() {
@@ -458,6 +559,10 @@ export function dispose3D() {
   exit3DMoveMode();
   clearSideRoomSelection();
   roomFloorMeshes = [];
+  if (measureOverlay) {
+    measureOverlay.dispose();
+    measureOverlay = null;
+  }
   if (interaction) {
     interaction.dispose();
     interaction = null;
@@ -680,53 +785,172 @@ function buildSceneGeometry() {
     }
   });
 
+  var hasSofaOnPlan = false;
   (activePlanData.furniture || []).forEach(function (item) {
     if (item.x == null || item.y == null) return;
+    var g = addFurnitureGroup(item, wReal, hReal);
+    if (g && g.userData.isSofaFurniture) hasSofaOnPlan = true;
+  });
 
-    var catalog = activePlanData.furniture_catalog || [];
-    var catalogRow = catalogById(catalog, item.catalogId);
+  if (!hasSofaOnPlan) addDefaultLivingRoomSofa(wReal, hReal);
+}
 
-    var wM = 0.6;
-    var dM = 0.6;
-    var hM = 0.7;
+function furnitureDimsForItem(item, catalogRow, wReal, hReal) {
+  var wM = 0.6;
+  var dM = 0.6;
+  var hM = 0.7;
 
-    if (catalogRow) {
-      wM = (catalogRow.width_mm || 600) / 1000;
-      dM = (catalogRow.depth_mm || catalogRow.length_mm || 600) / 1000;
-      hM = (catalogRow.height_mm || 750) / 1000;
-    } else {
-      var type = String(item.type || item.shape || "").toLowerCase();
-      var normW = item.width != null ? item.width : item.scale != null ? item.scale : 0.06;
-      var normD = item.height != null ? item.height : item.depth != null ? item.depth : normW;
-      wM = normW * wReal;
-      dM = normD * hReal;
-      if (type.indexOf("bed") >= 0) hM = 0.6;
-      else if (type.indexOf("sofa") >= 0) hM = 0.75;
-      else if (type.indexOf("chair") >= 0) hM = 0.85;
-      else if (type.indexOf("table") >= 0) hM = 0.75;
-      else hM = 0.7;
+  if (catalogRow) {
+    wM = (catalogRow.width_mm || 600) / 1000;
+    dM = (catalogRow.depth_mm || catalogRow.length_mm || 600) / 1000;
+    hM = (catalogRow.height_mm || 750) / 1000;
+  } else {
+    var type = furnitureTypeStr(item, catalogRow);
+    var normW = item.width != null ? item.width : item.scale != null ? item.scale : 0.06;
+    var normD = item.height != null ? item.height : item.depth != null ? item.depth : normW;
+    wM = normW * wReal;
+    dM = normD * hReal;
+    if (type.indexOf("bed") >= 0) hM = 0.6;
+    else if (type.indexOf("sofa") >= 0) hM = 0.75;
+    else if (type.indexOf("chair") >= 0) hM = 0.85;
+    else if (type.indexOf("table") >= 0) hM = 0.75;
+    else hM = 0.7;
+  }
+  return { wM: wM, dM: dM, hM: hM };
+}
+
+function furnitureTypeStr(item, catalogRow) {
+  var parts = [
+    item.type,
+    item.shape,
+    item.catalogId,
+    item.id,
+    catalogRow && catalogRow.shape,
+    catalogRow && catalogRow.category,
+    catalogRow && catalogRow.product_name,
+    catalogRow && catalogRow.name,
+  ];
+  var typeStr = parts
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return typeStr;
+}
+
+function addFurnitureGroup(item, wReal, hReal) {
+  var catalog = activePlanData.furniture_catalog || [];
+  var catalogRow = catalogById(catalog, item.catalogId);
+  var dims = furnitureDimsForItem(item, catalogRow, wReal, hReal);
+  var typeStr = furnitureTypeStr(item, catalogRow);
+
+  var group = new THREE.Group();
+  group.userData.furnitureItem = item;
+  group.userData.isFurniture = true;
+  group.userData.furnitureTypeStr = typeStr;
+  group.userData.furnitureDims = dims;
+  group.userData.isSofaFurniture = isSofaTypeStr(typeStr);
+
+  var wPos = normToWorld({ x: item.x, y: item.y }, wReal, hReal);
+  group.position.set(wPos.x, item.z || 0, wPos.z);
+  group.rotation.y = -(item.rotationDeg || 0) * Math.PI / 180;
+
+  addFurnitureMeshes(group, typeStr, item, dims.wM, dims.dM, dims.hM);
+  group.traverse(function (c) {
+    if (c.isMesh) c.userData.furnitureGroup = group;
+  });
+  sceneContent.add(group);
+  furnitureGroups.push(group);
+  return group;
+}
+
+function findLivingRoom(rooms) {
+  for (var i = 0; i < rooms.length; i++) {
+    var r = rooms[i];
+    var id = String(r.id || "").toLowerCase();
+    var name = String(r.name || "").toLowerCase();
+    var type = String(r.type || "").toLowerCase();
+    if (id.indexOf("living") >= 0 || name.indexOf("living") >= 0 || type === "living") return r;
+  }
+  return null;
+}
+
+function polygonCentroidNorm(poly) {
+  var cx = 0;
+  var cy = 0;
+  for (var i = 0; i < poly.length; i++) {
+    cx += poly[i].x;
+    cy += poly[i].y;
+  }
+  return { x: cx / poly.length, y: cy / poly.length };
+}
+
+/** Place teal mid-century sofa in living room when plan has no sofa. */
+function addDefaultLivingRoomSofa(wReal, hReal) {
+  var room = findLivingRoom(activePlanData.rooms || []);
+  if (!room || !room.polygon || room.polygon.length < 3) return;
+
+  var c = polygonCentroidNorm(room.polygon);
+  var placeholder = {
+    id: "__default_sofa__",
+    catalogId: null,
+    type: "sofa",
+    shape: "sofa",
+    x: c.x,
+    y: c.y,
+    rotationDeg: 0,
+    isDefaultPlaceholder: true,
+  };
+  addFurnitureGroup(placeholder, wReal, hReal);
+}
+
+function clearFurnitureMeshes(group) {
+  var kids = group.children.slice();
+  kids.forEach(function (child) {
+    group.remove(child);
+    disposeSceneGraph(child);
+  });
+  group.userData.usesGlbSofa = false;
+}
+
+function refreshSofaGlbMeshes() {
+  var upgraded = 0;
+  var skipped = 0;
+  furnitureGroups.forEach(function (group) {
+    var typeStr = group.userData.furnitureTypeStr || "";
+    if (!isSofaTypeStr(typeStr) || group.userData.usesGlbSofa) {
+      skipped++;
+      return;
     }
-
-    var group = new THREE.Group();
-    group.userData.furnitureItem = item;
-    group.userData.isFurniture = true;
-    var wPos = normToWorld({ x: item.x, y: item.y }, wReal, hReal);
-    group.position.set(wPos.x, item.z || 0, wPos.z);
-    group.rotation.y = -(item.rotationDeg || 0) * Math.PI / 180;
-
-    var typeStr = String(item.type || item.shape || catalogRow && catalogRow.shape || "").toLowerCase();
-    if (catalogRow && catalogRow.shape) typeStr = catalogRow.shape + " " + typeStr;
-
-    addFurnitureMeshes(group, typeStr, item, wM, dM, hM);
-    group.traverse(function (c) {
+    var dims = group.userData.furnitureDims;
+    if (!dims) {
+      skipped++;
+      return;
+    }
+    var glb = createDefaultSofaInstance(dims.wM, dims.dM, dims.hM);
+    if (!glb) {
+      skipped++;
+      return;
+    }
+    clearFurnitureMeshes(group);
+    group.add(glb);
+    group.userData.usesGlbSofa = true;
+    upgraded++;
+    glb.traverse(function (c) {
       if (c.isMesh) c.userData.furnitureGroup = group;
     });
-    sceneContent.add(group);
-    furnitureGroups.push(group);
   });
 }
 
 function addFurnitureMeshes(group, typeStr, item, wM, dM, hM) {
+  if (isSofaTypeStr(typeStr)) {
+    var glbSofa = createDefaultSofaInstance(wM, dM, hM);
+    if (glbSofa) {
+      group.add(glbSofa);
+      group.userData.usesGlbSofa = true;
+      return;
+    }
+  }
+
   if (typeStr.indexOf("sofa") >= 0 || typeStr.indexOf("lounge") >= 0) {
     var sofaColor = 0x253d5b;
     if (item.sofaColorOverride) sofaColor = getSofaHexColor(item.sofaColorOverride);

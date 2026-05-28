@@ -33,6 +33,7 @@ import { updateRoomHighlight } from "./roomOverlay.js";
 import { hideTooltip, showFurnitureTooltip, showRoomTooltip } from "./tooltip.js";
 import { createGeometryEditor } from "./geometryEditor.js";
 import { mountFileToolbar, mountGeometryToolbar } from "./toolbar.js";
+import { createCatalogDrawer } from "./catalogDrawer.js";
 import { getRoomMeasurementDisplay } from "./planTools.js";
 import { syncOverlayToImage } from "../lib/coordinates.js";
 import {
@@ -55,6 +56,7 @@ export function initFloorPlanViewer() {
   var planWrap = document.getElementById("planWrap");
   var tip = document.getElementById("tip");
   var toolbarEl = document.getElementById("toolbar");
+  var catalogDrawerEl = document.getElementById("catalog-drawer");
 
   var data = {
     analysisVersion: "1.0",
@@ -84,6 +86,7 @@ export function initFloorPlanViewer() {
   var fileTb = null;
   var geoTb = null;
   var furnitureRow = null;
+  var catalogDrawer = null;
 
   var llmStatus = document.createElement("span");
   llmStatus.className = "llm-status";
@@ -437,6 +440,67 @@ export function initFloorPlanViewer() {
     renderPlan(overlay, data, activeRoomId, selectedFurnitureId, size, geoOpts);
   }
 
+  function getPlacedItemsForDrawer() {
+    return (data.furniture || []).map(function (f) {
+      var row = catalogById(data.furniture_catalog || [], f.catalogId);
+      var title = row ? row.product_code || row.id || f.catalogId : f.catalogId || f.id;
+      var sub = row ? (row.product_name || row.name || "") : "";
+      return {
+        id: f.id,
+        label: title || "Item",
+        sub: sub,
+        onSelect: function () {
+          selectedFurnitureId = f.id;
+          syncReplaceSelect();
+          updateFurnitureSelectionUi();
+          render();
+        },
+        onRemove: function () {
+          data.furniture = (data.furniture || []).filter(function (x) {
+            return x.id !== f.id;
+          });
+          if (selectedFurnitureId === f.id) selectedFurnitureId = null;
+          syncReplaceSelect();
+          updateFurnitureSelectionUi();
+          render();
+        },
+      };
+    });
+  }
+
+  function addCatalogRowToPlan(row) {
+    if (!row) return;
+    var catalogRow = catalogById(data.furniture_catalog || [], row.id || row.product_code) || row;
+    var anchor = selectedFurnitureId
+      ? data.furniture.find(function (f) {
+          return f.id === selectedFurnitureId;
+        })
+      : null;
+
+    var newItem = null;
+    if (anchor) {
+      newItem = createFurnitureNearItem(anchor, catalogRow, getCatalogContext());
+    } else {
+      newItem = {
+        id: "f_" + Math.random().toString(36).slice(2, 10),
+        catalogId: catalogRow.id || catalogRow.product_code || null,
+        type: catalogRow.shape || "chair",
+        x: 0.5,
+        y: 0.5,
+        rotationDeg: 0,
+      };
+      applyCatalogSkuToItem(newItem, catalogRow, getCatalogContext());
+      constrainFurnitureMove(newItem, data.rooms || []);
+    }
+    if (!newItem) return;
+    if (!data.furniture) data.furniture = [];
+    data.furniture.push(newItem);
+    selectedFurnitureId = newItem.id;
+    syncReplaceSelect();
+    updateFurnitureSelectionUi();
+    render();
+  }
+
   function onPlanLoaded() {
     activeRoomId = null;
     refreshCalibration();
@@ -506,6 +570,7 @@ export function initFloorPlanViewer() {
     syncReplaceSelect();
     refreshCalibration();
     applyCatalogToAllFurniture();
+    if (catalogDrawer) catalogDrawer.setCatalogRows(data.furniture_catalog || []);
     render();
   }
 
@@ -572,6 +637,18 @@ export function initFloorPlanViewer() {
   var hasSb =
     !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY;
   var hasSbStorage = hasSb && import.meta.env.VITE_SUPABASE_STORAGE === "1";
+
+  if (catalogDrawerEl) {
+    catalogDrawer = createCatalogDrawer({
+      root: catalogDrawerEl,
+      onAdd: function (row) {
+        addCatalogRowToPlan(row);
+      },
+      getPlacedItems: function () {
+        return getPlacedItemsForDrawer();
+      },
+    });
+  }
 
   var viewport2D = document.getElementById("viewport");
   var viewport3D = document.getElementById("viewport3d");
@@ -739,6 +816,11 @@ export function initFloorPlanViewer() {
     show3D: show3D,
     saveToDb: saveToDb,
     loadFromDb: loadFromDb,
+    toggleCatalog: catalogDrawer
+      ? function () {
+          catalogDrawer.setOpen(!catalogDrawer.isOpen());
+        }
+      : undefined,
   });
 
   geoTb = mountGeometryToolbar(toolbarEl, {
@@ -1141,6 +1223,7 @@ export function initFloorPlanViewer() {
       .then(function (catalog) {
         shearlingCatalog = catalog;
         data.furniture_catalog = catalog;
+        if (catalogDrawer) catalogDrawer.setCatalogRows(catalog);
         setLlmStatus("Catalog: " + catalog.length + " Shearling SKUs loaded");
         boot();
       })

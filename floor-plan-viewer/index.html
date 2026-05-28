@@ -10,6 +10,49 @@
   <div id="app">
     <header class="bar" id="toolbar"></header>
     <main id="stage">
+      <aside id="catalog-drawer" class="catalog-drawer" hidden>
+        <div class="catalog-drawer__top">
+          <div class="catalog-tabs" role="tablist" aria-label="Catalog tabs">
+            <button type="button" class="catalog-tab catalog-tab--active" data-tab="add" role="tab" aria-selected="true">
+              Add
+            </button>
+            <button type="button" class="catalog-tab" data-tab="list" role="tab" aria-selected="false">
+              List
+            </button>
+            <button type="button" class="catalog-tab" data-tab="favorites" role="tab" aria-selected="false">
+              Favorites
+            </button>
+          </div>
+          <button type="button" class="catalog-close" id="catalog-close" aria-label="Close catalog">
+            ✕
+          </button>
+        </div>
+
+        <div class="catalog-controls">
+          <div class="catalog-search">
+            <span class="catalog-search__icon" aria-hidden="true">🔎</span>
+            <input id="catalog-search" type="search" placeholder="Search…" autocomplete="off" />
+          </div>
+          <div class="catalog-filters">
+            <select id="catalog-room" aria-label="Room">
+              <option value="">All rooms</option>
+              <option value="living">Living room</option>
+              <option value="bedroom">Bedroom</option>
+              <option value="dining">Dining</option>
+              <option value="office">Office</option>
+            </select>
+            <select id="catalog-category" aria-label="Category">
+              <option value="">All categories</option>
+            </select>
+          </div>
+          <div id="catalog-chips" class="catalog-chips" aria-label="Quick categories"></div>
+        </div>
+
+        <div class="catalog-body">
+          <div id="catalog-grid" class="catalog-grid" aria-label="Catalog products"></div>
+          <div id="catalog-list" class="catalog-list" hidden></div>
+        </div>
+      </aside>
       <div id="viewport">
         <div id="content">
           <div class="plan-wrap" id="planWrap">

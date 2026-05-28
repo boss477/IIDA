@@ -63,14 +63,14 @@ def _load_env_file() -> None:
     env_path = ROOT_DIR / ".env"
     if not env_path.is_file():
         return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
+    for line in env_path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if key:
             os.environ[key] = value
 
 
@@ -81,8 +81,8 @@ GEMINI_KEY = (
     or os.environ.get("VITE_GEMINI_API_KEY", "").strip()
 )
 GEMINI_MODEL = (
-    os.environ.get("GEMINI_MODEL", "").strip()
-    or os.environ.get("VITE_GEMINI_MODEL", "").strip()
+    os.environ.get("VITE_GEMINI_MODEL", "").strip()
+    or os.environ.get("GEMINI_MODEL", "").strip()
     or "gemini-3-flash-preview"
 )
 
@@ -93,8 +93,8 @@ KIMI_KEY = (
     or os.environ.get("VITE_FIREWORKS_API_KEY", "").strip()
 )
 KIMI_MODEL = (
-    os.environ.get("KIMI_MODEL", "").strip()
-    or os.environ.get("VITE_KIMI_MODEL", "").strip()
+    os.environ.get("VITE_KIMI_MODEL", "").strip()
+    or os.environ.get("KIMI_MODEL", "").strip()
     or "accounts/fireworks/models/kimi-k2p5"
 )
 FIREWORKS_BASE = (
@@ -510,7 +510,7 @@ def analyze_via_kimi(b64: str, mime: str) -> dict:
         timeout=(10, 3600),
     )
     if not r.ok:
-        raise RuntimeError(f"Kimi: {r.status_code} {r.text[:500]}")
+        raise RuntimeError(f"Fireworks ({KIMI_MODEL}): {r.status_code} {r.text[:500]}")
     data = r.json()
     choice = data["choices"][0]
     return normalize_analysis(
@@ -537,8 +537,7 @@ def serve_index():
 
     html = index_path.read_text(encoding="utf-8")
     lines = ["  <script>"]
-    if not KIMI_KEY and not GEMINI_KEY:
-        lines.append("    window.__ANALYZE_API__ = window.location.origin;")
+    lines.append("    window.__ANALYZE_API__ = window.location.origin;")
     lines.append(f"    window.__SERVER_LM_MODEL__ = {json.dumps(MODEL)};")
     lines.append(f"    window.__SERVER_LM_BASE__ = {json.dumps(LM_BASE)};")
     if KIMI_KEY:
@@ -623,9 +622,35 @@ def resize_image_b64(b64: str, max_size: int = 1024) -> str:
     except Exception:
         return b64
 
+def _debug_log(location, message, data, hypothesis_id):
+    import time
+
+    try:
+        entry = {
+            "sessionId": "bde2f0",
+            "location": location,
+            "message": message,
+            "data": data,
+            "hypothesisId": hypothesis_id,
+            "timestamp": int(time.time() * 1000),
+            "runId": "pre-fix",
+        }
+        log_path = ROOT_DIR.parent / "debug-bde2f0.log"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
 @app.route("/api/analyze", methods=["POST"])
 def analyze():
     try:
+        _debug_log(
+            "app.py:analyze",
+            "analyze request received",
+            {"hasKimiKey": bool(KIMI_KEY), "hasGeminiKey": bool(GEMINI_KEY)},
+            "H2",
+        )
         payload = request.get_json(force=True, silent=True) or {}
         b64 = payload.get("imageBase64")
         if not b64:
@@ -637,9 +662,16 @@ def analyze():
         mime = payload.get("mimeType") or "image/png"
         if KIMI_KEY:
             parsed = analyze_via_kimi(b64, mime)
+            _debug_log(
+                "app.py:analyze",
+                "fireworks analyze ok",
+                {"model": KIMI_MODEL, "roomCount": len(parsed.get("rooms") or [])},
+                "H2",
+            )
             return jsonify(parsed)
         if GEMINI_KEY:
             parsed = analyze_via_gemini(b64, mime)
+            _debug_log("app.py:analyze", "gemini analyze ok", {"roomCount": len(parsed.get("rooms") or [])}, "H2")
             return jsonify(parsed)
 
         url = f"{LM_BASE}/chat/completions"
@@ -1022,6 +1054,11 @@ def assets(filename):
 @app.route("/fixtures/<path:filename>", methods=["GET"])
 def fixtures(filename):
     return send_from_directory(DIST_DIR / "fixtures", filename)
+
+
+@app.route("/models/<path:filename>", methods=["GET"])
+def models(filename):
+    return send_from_directory(DIST_DIR / "models", filename)
 
 
 @app.route("/<path:_path>", methods=["GET"])
