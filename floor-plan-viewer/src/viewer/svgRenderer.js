@@ -489,7 +489,43 @@ function furnitureSize(item, size, renderCtx) {
   return { w: placeholder * size.width, h: placeholder * size.height };
 }
 
-function renderDetailedFurniture(svg, furniture, catalog, selectedId, size, renderCtx) {
+function isSelectedFurniture(itemId, selectedIds, primaryId) {
+  if (!selectedIds || !itemId) return false;
+  if (selectedIds instanceof Set) return selectedIds.has(itemId);
+  if (Array.isArray(selectedIds)) return selectedIds.indexOf(itemId) >= 0;
+  return selectedIds === itemId;
+}
+
+function renderGroupConnectors(svg, furniture, size, renderCtx) {
+  var groups = {};
+  (furniture || []).forEach(function (item) {
+    if (!item.groupId || item.x == null || item.y == null) return;
+    if (!groups[item.groupId]) groups[item.groupId] = [];
+    groups[item.groupId].push(item);
+  });
+  Object.keys(groups).forEach(function (gid) {
+    var members = groups[gid];
+    if (members.length < 2) return;
+    for (var i = 0; i < members.length; i++) {
+      for (var j = i + 1; j < members.length; j++) {
+        var a = members[i];
+        var b = members[j];
+        svg.appendChild(
+          setAttrs(svgEl("line"), {
+            class: "furniture-group-connector",
+            x1: a.x * size.width,
+            y1: a.y * size.height,
+            x2: b.x * size.width,
+            y2: b.y * size.height,
+          })
+        );
+      }
+    }
+  });
+}
+
+function renderDetailedFurniture(svg, furniture, catalog, selectedIds, primaryId, size, renderCtx) {
+  renderGroupConnectors(svg, furniture, size, renderCtx);
   (furniture || [])
     .slice()
     .sort(function (a, b) {
@@ -502,9 +538,16 @@ function renderDetailedFurniture(svg, furniture, catalog, selectedId, size, rend
       var box = furnitureSize(item, size, renderCtx);
       var catalogRow = catalogById(catalog || [], item.catalogId);
       var type = furnitureType(item, catalog || []);
+      var selected = isSelectedFurniture(item.id, selectedIds, primaryId);
+      var isPrimary = primaryId && item.id === primaryId;
       var g = setAttrs(svgEl("g"), {
         "data-furniture-id": item.id || "f-" + idx,
-        class: "furniture-g" + (selectedId && item.id === selectedId ? " furniture-g--selected" : ""),
+        class:
+          "furniture-g" +
+          (selected ? " furniture-g--selected" : "") +
+          (isPrimary ? " furniture-g--primary" : "") +
+          (item.groupId ? " furniture-g--grouped" : ""),
+        "data-group-id": item.groupId || "",
         transform: "translate(" + cx + " " + cy + ") rotate(" + furnitureRotation(item) + ")",
       });
 
@@ -531,8 +574,31 @@ function renderDetailedFurniture(svg, furniture, catalog, selectedId, size, rend
       else if (type.indexOf("rug") >= 0) renderRugItem(g, box.w, box.h);
       else g.appendChild(setAttrs(svgEl("rect"), { x: -box.w / 2, y: -box.h / 2, width: box.w, height: box.h, fill: "#dddddd", stroke: "#999999", rx: 2 }));
 
-      if (selectedId && item.id === selectedId) {
-        g.appendChild(setAttrs(svgEl("rect"), { class: "furniture-select-ring", x: -box.w / 2 - 4, y: -box.h / 2 - 4, width: box.w + 8, height: box.h + 8, fill: "none", stroke: "#2563eb", "stroke-width": 2, rx: 4 }));
+      if (selected) {
+        g.appendChild(
+          setAttrs(svgEl("rect"), {
+            class: "furniture-select-ring" + (isPrimary ? " furniture-select-ring--primary" : ""),
+            x: -box.w / 2 - 4,
+            y: -box.h / 2 - 4,
+            width: box.w + 8,
+            height: box.h + 8,
+            fill: "none",
+            stroke: isPrimary ? "#1d4ed8" : "#2563eb",
+            "stroke-width": isPrimary ? 2.5 : 2,
+            rx: 4,
+          })
+        );
+      }
+
+      if (item.groupId) {
+        g.appendChild(
+          setAttrs(svgEl("circle"), {
+            class: "furniture-group-badge",
+            cx: box.w / 2 - 6,
+            cy: -box.h / 2 + 6,
+            r: 5,
+          })
+        );
       }
 
       svg.appendChild(g);
@@ -785,8 +851,9 @@ function renderHitHighlights(svg, rooms, activeRoomId, size) {
   });
 }
 
-export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size, options) {
+export function renderPlan(svg, data, activeRoomId, selectedFurnitureIds, size, options) {
   var opts = options || {};
+  var primaryId = opts.primaryFurnitureId || null;
   svg.innerHTML = "";
   renderBackground(svg, size, opts.planImageSrc);
   createDefs(svg);
@@ -795,17 +862,24 @@ export function renderPlan(svg, data, activeRoomId, selectedFurnitureId, size, o
   renderWindows(svg, data.windows || [], size);
   renderDoorArcs(svg, data.doors || [], size);
   renderWalls(svg, data.walls || [], data.rooms || [], size);
+  var hasSelection =
+    selectedFurnitureIds instanceof Set
+      ? selectedFurnitureIds.size > 0
+      : Array.isArray(selectedFurnitureIds)
+        ? selectedFurnitureIds.length > 0
+        : !!selectedFurnitureIds;
   renderWalkableBoundary(
     svg,
     data.rooms || [],
     size,
-    !!selectedFurnitureId && !opts.vertexEditMode && !opts.wallEditMode
+    hasSelection && !opts.vertexEditMode && !opts.wallEditMode
   );
   renderDetailedFurniture(
     svg,
     data.furniture || [],
     data.furniture_catalog || [],
-    selectedFurnitureId,
+    selectedFurnitureIds,
+    primaryId,
     size,
     opts.furnitureRenderCtx || null
   );

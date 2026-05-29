@@ -50,6 +50,12 @@ import {
 } from "./plan3dViewer.js";
 import { WALL_COLOR_OPTIONS } from "./planTools.js";
 import { getWallPresetHex } from "./plan3dMaterials.js";
+import {
+  createFurnitureSelection,
+  duplicateFurnitureItems,
+  goesWithGroup,
+} from "./furnitureSelection.js";
+import { createFurnitureToolbar, selectionScreenRect } from "./furnitureToolbar.js";
 
 var PLAN_SIZE = { width: 1000, height: 1000 };
 
@@ -81,7 +87,8 @@ export function initFloorPlanViewer() {
   var drag = null;
   var furnitureDrag = null;
   var activeRoomId = null;
-  var selectedFurnitureId = null;
+  var furnitureSelection = createFurnitureSelection();
+  var floatingToolbar = null;
   var lastOpenedFile = null;
   var shearlingCatalog = null;
   var lastFurniturePointer = { clientX: 0, clientY: 0 };
@@ -132,7 +139,7 @@ export function initFloorPlanViewer() {
   var hint = document.createElement("span");
   hint.className = "toolbar-hint";
   hint.textContent =
-    "Select · Replace / Color / + Sofa near · drag · [ ] rotate · arrows · Esc deselect";
+    "Click · Shift/Ctrl+click multi · toolbar · drag · [ ] rotate · Esc deselect";
 
   var scaleEl = document.createElement("span");
   scaleEl.className = "calibration-scale";
@@ -163,33 +170,138 @@ export function initFloorPlanViewer() {
     });
   }
 
+  function getPrimaryFurnitureId() {
+    return furnitureSelection.getPrimary();
+  }
+
+  function getSelectedFurnitureIds() {
+    return furnitureSelection.getIds();
+  }
+
+  function clearFurnitureSelection() {
+    furnitureSelection.clear();
+    if (floatingToolbar) floatingToolbar.hide();
+  }
+
+  function syncFloatingToolbar() {
+    if (!floatingToolbar || activeMode !== "2D") return;
+    var ids = getSelectedFurnitureIds();
+    if (!ids.length) {
+      floatingToolbar.hide();
+      return;
+    }
+    requestAnimationFrame(function () {
+      var rect = selectionScreenRect(overlay, ids);
+      if (!rect) {
+        floatingToolbar.hide();
+        return;
+      }
+      var hint = ids.length === 1 ? "Select another item, then Goes with to link" : "";
+      floatingToolbar.show(rect, {
+        goesWithDisabled: ids.length < 2,
+        hint: hint,
+      });
+    });
+  }
+
+  function rotateSelectedFurniture(deltaDeg) {
+    var ids = getSelectedFurnitureIds();
+    if (!ids.length) return;
+    var idSet = {};
+    ids.forEach(function (id) {
+      idSet[id] = true;
+    });
+    (data.furniture || []).forEach(function (item) {
+      if (idSet[item.id]) item.rotationDeg = (item.rotationDeg || 0) + deltaDeg;
+    });
+    render();
+  }
+
+  function removeSelectedFurniture() {
+    var ids = getSelectedFurnitureIds();
+    if (!ids.length) return;
+    var idSet = {};
+    ids.forEach(function (id) {
+      idSet[id] = true;
+    });
+    data.furniture = (data.furniture || []).filter(function (f) {
+      return !idSet[f.id];
+    });
+    clearFurnitureSelection();
+    syncReplaceSelect();
+    updateFurnitureSelectionUi();
+    render();
+  }
+
+  function copySelectedFurniture() {
+    var ids = getSelectedFurnitureIds();
+    if (!ids.length) return;
+    var copies = duplicateFurnitureItems(data.furniture, ids);
+    if (!copies.length) return;
+    if (!data.furniture) data.furniture = [];
+    copies.forEach(function (c) {
+      data.furniture.push(c);
+    });
+    furnitureSelection.clear();
+    copies.forEach(function (c) {
+      furnitureSelection.add(c.id);
+    });
+    syncReplaceSelect();
+    updateFurnitureSelectionUi();
+    render();
+  }
+
+  function linkSelectedAsGoesWith() {
+    var ids = getSelectedFurnitureIds();
+    if (ids.length < 2) return;
+    goesWithGroup(data.furniture, ids);
+    syncFloatingToolbar();
+    render();
+  }
+
+  function handleFloatingToolbarAction(actionId) {
+    if (actionId === "rotate") {
+      rotateSelectedFurniture(5);
+    } else if (actionId === "replace") {
+      replaceSel.focus();
+      replaceSel.click();
+    } else if (actionId === "goesWith") {
+      linkSelectedAsGoesWith();
+    } else if (actionId === "copy") {
+      copySelectedFurniture();
+    } else if (actionId === "remove") {
+      removeSelectedFurniture();
+    }
+  }
+
   function updateFurnitureSelectionUi(pointerEvent) {
     if (pointerEvent) {
       lastFurniturePointer.clientX = pointerEvent.clientX;
       lastFurniturePointer.clientY = pointerEvent.clientY;
     }
-    if (!selectedFurnitureId) {
+    var ids = getSelectedFurnitureIds();
+    if (!ids.length) {
       furnitureInfoEl.textContent = "Furniture: click a piece, then pick a Shearling SKU";
+      if (floatingToolbar) floatingToolbar.hide();
       return;
     }
-    var item = data.furniture.find(function (f) {
-      return f.id === selectedFurnitureId;
-    });
     if (!item) {
       furnitureInfoEl.textContent = "Furniture: (selection lost)";
       return;
     }
+    var countPrefix = ids.length > 1 ? ids.length + " selected · " : "";
     var row = catalogById(data.furniture_catalog || [], item.catalogId);
     if (row) {
       var label = formatCatalogDimensionsLabel(row, item);
-      furnitureInfoEl.textContent = label;
-      showFurnitureTooltip(tip, lastFurniturePointer, label);
+      furnitureInfoEl.textContent = countPrefix + label;
+      showFurnitureTooltip(tip, lastFurniturePointer, countPrefix + label);
     } else if (item.catalogId) {
       furnitureInfoEl.textContent =
-        item.catalogId + " — use Replace with to pick a Shearling SKU";
+        countPrefix + item.catalogId + " — use Replace with to pick a Shearling SKU";
     } else {
-      furnitureInfoEl.textContent = "Selected — use Replace with for DB size + icon";
+      furnitureInfoEl.textContent = countPrefix + "Selected — use Replace with for DB size + icon";
     }
+    syncFloatingToolbar();
   }
 
   function refreshCalibration() {
@@ -230,12 +342,13 @@ export function initFloorPlanViewer() {
 
   function syncSofaColorSelect() {
     sofaColorSel.innerHTML = "";
-    if (!selectedFurnitureId) {
+    var primaryId = getPrimaryFurnitureId();
+    if (!primaryId) {
       sofaColorSel.disabled = true;
       return;
     }
     var item = data.furniture.find(function (f) {
-      return f.id === selectedFurnitureId;
+      return f.id === primaryId;
     });
     if (!item || !isItemSofa(item)) {
       sofaColorSel.disabled = true;
@@ -289,9 +402,10 @@ export function initFloorPlanViewer() {
       o.textContent = c.name;
       replaceSel.appendChild(o);
     });
-    if (selectedFurnitureId) {
+    var primaryId = getPrimaryFurnitureId();
+    if (primaryId) {
       var item = data.furniture.find(function (f) {
-        return f.id === selectedFurnitureId;
+        return f.id === primaryId;
       });
       if (item) replaceSel.value = item.catalogId;
       replaceSel.disabled = false;
@@ -327,9 +441,10 @@ export function initFloorPlanViewer() {
   }
 
   function addSofaNearSelected() {
-    if (!selectedFurnitureId) return;
+    var primaryId = getPrimaryFurnitureId();
+    if (!primaryId) return;
     var anchor = data.furniture.find(function (f) {
-      return f.id === selectedFurnitureId;
+      return f.id === primaryId;
     });
     if (!anchor) return;
     var catalog = data.furniture_catalog || [];
@@ -342,7 +457,7 @@ export function initFloorPlanViewer() {
     if (!newItem) return;
     if (!data.furniture) data.furniture = [];
     data.furniture.push(newItem);
-    selectedFurnitureId = newItem.id;
+    furnitureSelection.setSingle(newItem.id);
     syncReplaceSelect();
     updateFurnitureSelectionUi();
     render();
@@ -442,7 +557,9 @@ export function initFloorPlanViewer() {
       planHeightPx: plan.naturalHeight || size.height,
       furnitureCatalog: data.furniture_catalog || [],
     };
-    renderPlan(overlay, data, activeRoomId, selectedFurnitureId, size, geoOpts);
+    geoOpts.primaryFurnitureId = getPrimaryFurnitureId();
+    renderPlan(overlay, data, activeRoomId, getSelectedFurnitureIds(), size, geoOpts);
+    syncFloatingToolbar();
   }
 
   function getPlacedItemsForDrawer() {
@@ -455,7 +572,7 @@ export function initFloorPlanViewer() {
         label: title || "Item",
         sub: sub,
         onSelect: function () {
-          selectedFurnitureId = f.id;
+          furnitureSelection.setSingle(f.id);
           syncReplaceSelect();
           updateFurnitureSelectionUi();
           render();
@@ -464,7 +581,7 @@ export function initFloorPlanViewer() {
           data.furniture = (data.furniture || []).filter(function (x) {
             return x.id !== f.id;
           });
-          if (selectedFurnitureId === f.id) selectedFurnitureId = null;
+          if (furnitureSelection.has(f.id)) furnitureSelection.remove(f.id);
           syncReplaceSelect();
           updateFurnitureSelectionUi();
           render();
@@ -476,9 +593,10 @@ export function initFloorPlanViewer() {
   function addCatalogRowToPlan(row) {
     if (!row) return;
     var catalogRow = catalogById(data.furniture_catalog || [], row.id || row.product_code) || row;
-    var anchor = selectedFurnitureId
+    var primaryId = getPrimaryFurnitureId();
+    var anchor = primaryId
       ? data.furniture.find(function (f) {
-          return f.id === selectedFurnitureId;
+          return f.id === primaryId;
         })
       : null;
 
@@ -500,7 +618,7 @@ export function initFloorPlanViewer() {
     if (!newItem) return;
     if (!data.furniture) data.furniture = [];
     data.furniture.push(newItem);
-    selectedFurnitureId = newItem.id;
+    furnitureSelection.setSingle(newItem.id);
     syncReplaceSelect();
     updateFurnitureSelectionUi();
     render();
@@ -569,7 +687,7 @@ export function initFloorPlanViewer() {
       delete f.depth;
       delete f.scale;
     });
-    selectedFurnitureId = null;
+    clearFurnitureSelection();
     activeRoomId = null;
     if (geo && geo.resetForNewData) geo.resetForNewData();
     syncReplaceSelect();
@@ -741,7 +859,8 @@ export function initFloorPlanViewer() {
   function show3D() {
     if (activeMode === "3D") return;
     activeMode = "3D";
-    selectedFurnitureId = null;
+    clearFurnitureSelection();
+    if (floatingToolbar) floatingToolbar.hide();
     syncReplaceSelect();
     updateFurnitureSelectionUi();
     hideTooltip(tip);
@@ -927,7 +1046,7 @@ export function initFloorPlanViewer() {
     requestRender: render,
     onToolModeChange: function (mode) {
       if (mode !== "view") {
-        selectedFurnitureId = null;
+        clearFurnitureSelection();
         furnitureDrag = null;
         syncReplaceSelect();
         updateFurnitureSelectionUi();
@@ -965,9 +1084,10 @@ export function initFloorPlanViewer() {
   toolbarEl.appendChild(furnitureRow);
 
   sofaColorSel.addEventListener("change", function () {
-    if (!selectedFurnitureId) return;
+    var primaryId = getPrimaryFurnitureId();
+    if (!primaryId) return;
     var item = data.furniture.find(function (f) {
-      return f.id === selectedFurnitureId;
+      return f.id === primaryId;
     });
     if (!item) return;
     applySofaColorToItem(item, sofaColorSel.value);
@@ -983,10 +1103,15 @@ export function initFloorPlanViewer() {
   toolbarEl.appendChild(scaleEl);
   toolbarEl.appendChild(hint);
 
+  floatingToolbar = createFurnitureToolbar(planWrap, {
+    onAction: handleFloatingToolbarAction,
+  });
+
   replaceSel.addEventListener("change", function () {
-    if (!selectedFurnitureId) return;
+    var primaryId = getPrimaryFurnitureId();
+    if (!primaryId) return;
     var item = data.furniture.find(function (f) {
-      return f.id === selectedFurnitureId;
+      return f.id === primaryId;
     });
     if (!item) return;
     var row = catalogById(data.furniture_catalog || [], replaceSel.value);
@@ -1023,6 +1148,7 @@ export function initFloorPlanViewer() {
     "mousedown",
     function (e) {
       if (e.button !== 0) return;
+      if (e.target.closest(".furniture-floating-toolbar")) return;
       var n = clientToPlanNormalized(e.clientX, e.clientY);
 
       if (geo.isGeometryClickMode()) {
@@ -1059,12 +1185,26 @@ export function initFloorPlanViewer() {
           return f.id === id;
         });
         if (!item) return;
-        selectedFurnitureId = id;
+        var multi = e.shiftKey || e.ctrlKey || e.metaKey;
+        if (multi) {
+          furnitureSelection.toggle(id);
+        } else {
+          furnitureSelection.setSingle(id);
+        }
         activeRoomId = null;
         updateRoomHighlight(overlay, null);
         syncReplaceSelect();
         updateFurnitureSelectionUi(e);
         render();
+        var dragIds = furnitureSelection.has(id) ? getSelectedFurnitureIds() : [id];
+        var dragItems = dragIds.map(function (did) {
+          var df = data.furniture.find(function (f) {
+            return f.id === did;
+          });
+          return df
+            ? { id: did, ox: df.x, oy: df.y, lastValidX: df.x, lastValidY: df.y }
+            : null;
+        }).filter(Boolean);
         furnitureDrag = {
           id: id,
           nx: n.x,
@@ -1073,12 +1213,18 @@ export function initFloorPlanViewer() {
           oy: item.y,
           lastValidX: item.x,
           lastValidY: item.y,
+          multi: dragItems.length > 1,
+          items: dragItems,
         };
         return;
       }
 
       if (geo.getToolMode() === "view") {
         e.stopPropagation();
+        clearFurnitureSelection();
+        syncReplaceSelect();
+        updateFurnitureSelectionUi();
+        hideTooltip(tip);
         geo.handlePlanClick(n);
       }
     },
@@ -1090,7 +1236,7 @@ export function initFloorPlanViewer() {
     var n = clientToPlanNormalized(e.clientX, e.clientY);
     if (geo.handleMousemove(n)) return;
     if (geo.getToolMode() !== "view") return;
-    if (selectedFurnitureId) return;
+    if (getSelectedFurnitureIds().length) return;
     if (n.x < 0 || n.x > 1 || n.y < 0 || n.y > 1) {
       activeRoomId = null;
       updateRoomHighlight(overlay, null);
@@ -1123,6 +1269,7 @@ export function initFloorPlanViewer() {
     if (e.target.closest(".plan-wall-vertex-handle")) return;
     if (e.target.closest(".plan-vertex-handle")) return;
     if (e.target.closest("[data-furniture-id]")) return;
+    if (e.target.closest(".furniture-floating-toolbar")) return;
     drag = { x: e.clientX - tx, y: e.clientY - ty };
   });
   window.addEventListener("mousemove", function (e) {
@@ -1132,30 +1279,45 @@ export function initFloorPlanViewer() {
       return;
     }
     if (furnitureDrag) {
-      var item = data.furniture.find(function (f) {
-        return f.id === furnitureDrag.id;
-      });
-      if (item) {
-        var n = clientToPlanNormalized(e.clientX, e.clientY);
-        var dx = n.x - furnitureDrag.nx;
-        var dy = n.y - furnitureDrag.ny;
-        var tryX = furnitureDrag.ox + dx;
-        var tryY = furnitureDrag.oy + dy;
-        item.x = tryX;
-        item.y = tryY;
-        if (
-          constrainFurnitureMove(
-            item,
-            data.rooms,
-            furnitureDrag.lastValidX,
-            furnitureDrag.lastValidY
-          )
-        ) {
-          furnitureDrag.lastValidX = item.x;
-          furnitureDrag.lastValidY = item.y;
+      var n = clientToPlanNormalized(e.clientX, e.clientY);
+      var dx = n.x - furnitureDrag.nx;
+      var dy = n.y - furnitureDrag.ny;
+      if (furnitureDrag.multi && furnitureDrag.items && furnitureDrag.items.length) {
+        furnitureDrag.items.forEach(function (di) {
+          var it = data.furniture.find(function (f) {
+            return f.id === di.id;
+          });
+          if (!it) return;
+          it.x = di.ox + dx;
+          it.y = di.oy + dy;
+          if (
+            constrainFurnitureMove(it, data.rooms, di.lastValidX, di.lastValidY)
+          ) {
+            di.lastValidX = it.x;
+            di.lastValidY = it.y;
+          }
+        });
+      } else {
+        var item = data.furniture.find(function (f) {
+          return f.id === furnitureDrag.id;
+        });
+        if (item) {
+          item.x = furnitureDrag.ox + dx;
+          item.y = furnitureDrag.oy + dy;
+          if (
+            constrainFurnitureMove(
+              item,
+              data.rooms,
+              furnitureDrag.lastValidX,
+              furnitureDrag.lastValidY
+            )
+          ) {
+            furnitureDrag.lastValidX = item.x;
+            furnitureDrag.lastValidY = item.y;
+          }
         }
-        render();
       }
+      render();
       return;
     }
     if (!drag) return;
@@ -1182,7 +1344,7 @@ export function initFloorPlanViewer() {
         e.preventDefault();
         return;
       }
-      selectedFurnitureId = null;
+      clearFurnitureSelection();
       syncReplaceSelect();
       updateFurnitureSelectionUi();
       hideTooltip(tip);
@@ -1195,38 +1357,34 @@ export function initFloorPlanViewer() {
       return;
     }
     if (geo.blocksFurnitureInteraction()) return;
-    if (!selectedFurnitureId) return;
-    var item = data.furniture.find(function (f) {
-      return f.id === selectedFurnitureId;
+    var selectedIds = getSelectedFurnitureIds();
+    if (!selectedIds.length) return;
+    var idSet = {};
+    selectedIds.forEach(function (sid) {
+      idSet[sid] = true;
     });
-    if (!item) return;
     var step = e.shiftKey ? 0.022 : 0.009;
-    var prevX = item.x;
-    var prevY = item.y;
     var changed = false;
-    if (e.key === "ArrowLeft") {
-      item.x -= step;
-      changed = true;
-    } else if (e.key === "ArrowRight") {
-      item.x += step;
-      changed = true;
-    } else if (e.key === "ArrowUp") {
-      item.y -= step;
-      changed = true;
-    } else if (e.key === "ArrowDown") {
-      item.y += step;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown") {
+      (data.furniture || []).forEach(function (item) {
+        if (!idSet[item.id]) return;
+        var prevX = item.x;
+        var prevY = item.y;
+        if (e.key === "ArrowLeft") item.x -= step;
+        else if (e.key === "ArrowRight") item.x += step;
+        else if (e.key === "ArrowUp") item.y -= step;
+        else if (e.key === "ArrowDown") item.y += step;
+        constrainFurnitureMove(item, data.rooms, prevX, prevY);
+      });
       changed = true;
     } else if (e.key === "[" || e.key === "{") {
-      item.rotationDeg = (item.rotationDeg || 0) - 5;
+      rotateSelectedFurniture(-5);
       changed = true;
     } else if (e.key === "]" || e.key === "}") {
-      item.rotationDeg = (item.rotationDeg || 0) + 5;
+      rotateSelectedFurniture(5);
       changed = true;
     }
     if (changed) {
-      if (e.key.indexOf("Arrow") === 0) {
-        constrainFurnitureMove(item, data.rooms, prevX, prevY);
-      }
       render();
       e.preventDefault();
     }

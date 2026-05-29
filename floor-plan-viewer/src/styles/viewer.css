@@ -769,6 +769,86 @@ body.view3d-move-mode.view3d-dragging #viewport3d canvas {
 #overlay .furniture-select-ring {
   pointer-events: none;
 }
+#overlay .furniture-select-ring--primary {
+  stroke-dasharray: none;
+}
+#overlay .furniture-group-connector {
+  stroke: #94a3b8;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+  opacity: 0.75;
+}
+#overlay .furniture-group-badge {
+  fill: #0ea5e9;
+  stroke: #fff;
+  stroke-width: 1;
+  pointer-events: none;
+}
+.furniture-floating-toolbar {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: auto;
+}
+.furniture-floating-toolbar__hint {
+  font-size: 11px;
+  color: #64748b;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 3px 8px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+.furniture-floating-toolbar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+}
+.furniture-floating-toolbar__btn {
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 6px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #0f172a;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.furniture-floating-toolbar__btn:hover:not(:disabled) {
+  background: #e2e8f0;
+}
+.furniture-floating-toolbar__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.furniture-floating-toolbar__btn[data-action="remove"] {
+  color: #b91c1c;
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.furniture-floating-toolbar__btn[data-action="remove"]:hover:not(:disabled) {
+  background: #fee2e2;
+}
+.furniture-floating-toolbar__btn[data-action="goesWith"] {
+  color: #0369a1;
+  border-color: #bae6fd;
+  background: #f0f9ff;
+}
+.furniture-floating-toolbar__btn[data-action="goesWith"]:hover:not(:disabled) {
+  background: #e0f2fe;
+}
 #overlay .door-mark {
   pointer-events: none;
 }
