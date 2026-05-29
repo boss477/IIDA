@@ -26,6 +26,9 @@ var _dragPt = new THREE.Vector3();
  * @param {() => void} [opts.onFurnitureHoverEnd]
  * @param {(group: THREE.Group) => void} [opts.onFurnitureSelect]
  * @param {() => void} [opts.onFurnitureDeselect]
+ * @param {() => THREE.Mesh[]} [opts.getWallMeshes]
+ * @param {(mesh: THREE.Mesh) => void} [opts.onWallSelect]
+ * @param {() => void} [opts.onWallDeselect]
  * @param {() => boolean} [opts.isSidePanelOpen]
  * @param {() => boolean} [opts.isSideRoomPickActive]
  * @param {(item: object) => void} [opts.onFurnitureMoved]
@@ -99,6 +102,16 @@ export function createPlan3DInteraction(opts) {
     }
     if (!opts.findRoomAtWorld) return null;
     return opts.findRoomAtWorld(pt.x, pt.z);
+  }
+
+  function pickWall(e) {
+    var nd = getNDC(e);
+    mouse2.set(nd.x, nd.y);
+    raycaster.setFromCamera(mouse2, opts.camera);
+    var walls = opts.getWallMeshes ? opts.getWallMeshes() : [];
+    if (!walls.length) return null;
+    var hits = raycaster.intersectObjects(walls, false);
+    return hits.length ? hits[0].object : null;
   }
 
   function isRoomPickActive() {
@@ -186,13 +199,18 @@ export function createPlan3DInteraction(opts) {
       opts.onFurnitureHover(grpHover, e);
     } else {
       if (opts.onFurnitureHoverEnd) opts.onFurnitureHoverEnd();
-      var roomGen = pickRoom(e);
-      if (roomGen && opts.onRoomHoverGeneral) {
+      var wallHover = pickWall(e);
+      if (wallHover) {
         dom.style.cursor = "pointer";
-        opts.onRoomHoverGeneral(roomGen, e);
       } else {
-        dom.style.cursor = moveMode ? "grab" : "";
-        if (opts.onRoomHoverGeneralEnd) opts.onRoomHoverGeneralEnd();
+        var roomGen = pickRoom(e);
+        if (roomGen && opts.onRoomHoverGeneral) {
+          dom.style.cursor = "pointer";
+          opts.onRoomHoverGeneral(roomGen, e);
+        } else {
+          dom.style.cursor = moveMode ? "grab" : "";
+          if (opts.onRoomHoverGeneralEnd) opts.onRoomHoverGeneralEnd();
+        }
       }
     }
   }
@@ -216,9 +234,19 @@ export function createPlan3DInteraction(opts) {
     }
     var grp = pickFurniture(e);
     if (grp) {
+      if (opts.onWallDeselect) opts.onWallDeselect();
       selectGroup(grp);
       if (opts.onFurnitureSelect) opts.onFurnitureSelect(grp);
-    } else deselect();
+      return;
+    }
+    var wall = pickWall(e);
+    if (wall && opts.onWallSelect) {
+      deselect();
+      opts.onWallSelect(wall);
+      return;
+    }
+    if (opts.onWallDeselect) opts.onWallDeselect();
+    deselect();
   }
 
   dom.addEventListener("mousedown", onPointerDown);

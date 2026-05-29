@@ -5,6 +5,7 @@ import {
   segmentLengthPx,
 } from "../lib/calibration.js";
 import { polygonArea, polygonBBox } from "../lib/geometry.js";
+import { formatAreaFromSqM, formatLength } from "./plan3dMeasure.js";
 
 export const FLOORING_OPTIONS = [
   { value: "wood", label: "Wood" },
@@ -13,6 +14,84 @@ export const FLOORING_OPTIONS = [
   { value: "stone", label: "Balcony / stone" },
   { value: "plain", label: "Plain / neutral" },
 ];
+
+export const WALL_COLOR_OPTIONS = [
+  { value: "warm-white", label: "Warm white" },
+  { value: "champagne", label: "Champagne" },
+  { value: "desert-sand", label: "Desert sand" },
+  { value: "warm-greige", label: "Warm greige" },
+  { value: "soft-sage", label: "Soft sage" },
+  { value: "eucalyptus", label: "Eucalyptus" },
+  { value: "sea-mist", label: "Sea mist" },
+  { value: "blush-rose", label: "Blush rose" },
+  { value: "terracotta", label: "Terracotta" },
+  { value: "deep-navy", label: "Deep navy" },
+  { value: "midnight-teal", label: "Midnight teal" },
+  { value: "charcoal-stone", label: "Charcoal stone" },
+];
+
+var WALL_COLOR_BY_TYPE = {
+  bedroom: "blush-rose",
+  living: "soft-sage",
+  hall: "warm-greige",
+  bathroom: "sea-mist",
+  kitchen: "champagne",
+  utility: "warm-greige",
+  room: "warm-white",
+};
+
+/**
+ * @param {object} room
+ * @returns {string}
+ */
+export function resolveRoomWallColor(room) {
+  if (!room) return "warm-white";
+  if (room.wallColor) return String(room.wallColor);
+  var type = String(room.type || "").toLowerCase();
+  if (WALL_COLOR_BY_TYPE[type]) return WALL_COLOR_BY_TYPE[type];
+  var name = String(room.name || "").toLowerCase();
+  if (name.indexOf("bed") >= 0) return "blush-rose";
+  if (name.indexOf("bath") >= 0) return "sea-mist";
+  if (name.indexOf("living") >= 0 || name.indexOf("lounge") >= 0) return "soft-sage";
+  if (name.indexOf("kitchen") >= 0) return "champagne";
+  if (name.indexOf("hall") >= 0 || name.indexOf("passage") >= 0) return "warm-greige";
+  return "warm-white";
+}
+
+/** @param {string} sourceId @param {number} segmentIndex */
+export function wallSegmentKey(sourceId, segmentIndex) {
+  return String(sourceId || "wall") + ":" + String(segmentIndex);
+}
+
+/** @param {object} data */
+export function ensureWallSegmentColors(data) {
+  if (!data) return {};
+  if (!data.wallSegmentColors || typeof data.wallSegmentColors !== "object") {
+    data.wallSegmentColors = {};
+  }
+  return data.wallSegmentColors;
+}
+
+/**
+ * @param {object} data
+ * @param {string} segmentKey
+ * @param {object|null} room
+ */
+export function resolveWallSegmentColor(data, segmentKey, room) {
+  var map = data && data.wallSegmentColors;
+  if (map && map[segmentKey]) return map[segmentKey];
+  return resolveRoomWallColor(room);
+}
+
+/**
+ * @param {object} data
+ * @param {string} segmentKey
+ * @param {string} presetId
+ */
+export function setWallSegmentColor(data, segmentKey, presetId) {
+  if (!data || !segmentKey || !presetId) return;
+  ensureWallSegmentColors(data)[segmentKey] = presetId;
+}
 
 export const ROOM_PRESETS = [
   { id: "bedroom", label: "Bedroom", name: "BEDROOM", type: "bedroom", flooring: "wood" },
@@ -139,7 +218,7 @@ export function formatAreaLabel(poly, naturalWidth, naturalHeight, calibrationSt
       naturalHeight,
       calibrationState.metersPerPixel
     );
-    return sqM.toFixed(1) + " m²";
+    return formatAreaFromSqM(sqM);
   }
   var apx = polygonArea(poly) * naturalWidth * naturalHeight;
   return Math.round(apx) + " px² · set scale for m²";
@@ -159,7 +238,7 @@ export function formatRoomDimensions(poly, naturalWidth, naturalHeight, calibrat
   var mpp = calibrationState.metersPerPixel;
   var w = (bbox.maxX - bbox.minX) * naturalWidth * mpp;
   var h = (bbox.maxY - bbox.minY) * naturalHeight * mpp;
-  return w.toFixed(2) + " m × " + h.toFixed(2) + " m";
+  return formatLength(w) + " × " + formatLength(h);
 }
 
 /**

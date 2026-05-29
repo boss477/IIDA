@@ -1,13 +1,42 @@
 import * as THREE from "three";
 import { catalogById, formatCatalogDimensionsLabel } from "../lib/catalogSizing.js";
 
-var USE_IMPERIAL = true;
+/** @typedef {"imperial"|"m"|"cm"} MeasureUnit */
+
+/** @type {MeasureUnit} */
+var MEASURE_UNIT = "imperial";
+
+var unitChangeListeners = [];
 
 /**
- * @param {boolean} imperial
+ * @returns {MeasureUnit}
  */
+export function getMeasureUnits() {
+  return MEASURE_UNIT;
+}
+
+/**
+ * @param {MeasureUnit} unit
+ */
+export function setMeasureUnits(unit) {
+  var next = unit === "m" || unit === "cm" ? unit : "imperial";
+  if (next === MEASURE_UNIT) return;
+  MEASURE_UNIT = next;
+  unitChangeListeners.forEach(function (fn) {
+    fn(MEASURE_UNIT);
+  });
+}
+
+/**
+ * @param {(unit: MeasureUnit) => void} fn
+ */
+export function onMeasureUnitsChange(fn) {
+  if (typeof fn === "function") unitChangeListeners.push(fn);
+}
+
+/** @param {boolean} imperial */
 export function setMeasureUnitsImperial(imperial) {
-  USE_IMPERIAL = !!imperial;
+  setMeasureUnits(imperial ? "imperial" : "m");
 }
 
 export function formatLengthImperial(meters) {
@@ -29,8 +58,26 @@ export function formatLengthMetric(meters) {
   return (Math.round(meters * 100) / 100).toFixed(2) + " m";
 }
 
+export function formatLengthCm(meters) {
+  if (meters == null || !isFinite(meters)) return "—";
+  return Math.round(meters * 100) + " cm";
+}
+
 export function formatLength(meters) {
-  return USE_IMPERIAL ? formatLengthImperial(meters) : formatLengthMetric(meters);
+  if (MEASURE_UNIT === "imperial") return formatLengthImperial(meters);
+  if (MEASURE_UNIT === "cm") return formatLengthCm(meters);
+  return formatLengthMetric(meters);
+}
+
+/**
+ * @param {number} sqM area in square metres
+ */
+export function formatAreaFromSqM(sqM) {
+  if (sqM == null || !isFinite(sqM)) return "—";
+  if (MEASURE_UNIT === "imperial") {
+    return (sqM * 10.7639104167).toFixed(1) + " sq ft";
+  }
+  return sqM.toFixed(1) + " m²";
 }
 
 /**

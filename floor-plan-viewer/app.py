@@ -544,6 +544,10 @@ def serve_index():
         lines.append(f"    window.__SERVER_KIMI_MODEL__ = {json.dumps(KIMI_MODEL)};")
     if GEMINI_KEY:
         lines.append(f"    window.__SERVER_GEMINI_MODEL__ = {json.dumps(GEMINI_MODEL)};")
+    sb_url, sb_key = get_supabase_config()
+    if sb_url and sb_key:
+        lines.append(f"    window.__SUPABASE_URL__ = {json.dumps(sb_url)};")
+        lines.append(f"    window.__SUPABASE_ANON_KEY__ = {json.dumps(sb_key)};")
     lines.append("  </script>")
     config_script = "\n".join(lines)
     html = html.replace("</head>", f"{config_script}\n</head>")

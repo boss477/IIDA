@@ -13,6 +13,7 @@ export function disposeMaterials() {
     t.dispose();
   });
   _disposables.length = 0;
+  clearWallMaterialCache();
   _fabricRough = null;
   _woodGrain = null;
 }
@@ -228,15 +229,66 @@ export function createFloorMaterial(flooring, repeat) {
   });
 }
 
-export function createWallMaterial() {
+/** Premium interior paint presets (base hex + finish). */
+export var WALL_COLOR_PRESETS = {
+  "warm-white": { color: "#f5f2ec", roughness: 0.88 },
+  "soft-sage": { color: "#c8d5c4", roughness: 0.86 },
+  "desert-sand": { color: "#e2d5c3", roughness: 0.9 },
+  "champagne": { color: "#f0e6d8", roughness: 0.87 },
+  "blush-rose": { color: "#e8d4d0", roughness: 0.88 },
+  "warm-greige": { color: "#d9d2c8", roughness: 0.89 },
+  "terracotta": { color: "#c4a088", roughness: 0.84 },
+  "eucalyptus": { color: "#a8b8a8", roughness: 0.85 },
+  "sea-mist": { color: "#d4e4e8", roughness: 0.86 },
+  "deep-navy": { color: "#3d4f5f", roughness: 0.82 },
+  "midnight-teal": { color: "#2c4a52", roughness: 0.8 },
+  "charcoal-stone": { color: "#6b6560", roughness: 0.83 },
+};
+
+var _wallMatCache = {};
+
+export function getWallMaterial(presetId) {
+  var id = presetId && WALL_COLOR_PRESETS[presetId] ? presetId : "warm-white";
+  if (!_wallMatCache[id]) _wallMatCache[id] = createWallMaterial(id);
+  return _wallMatCache[id];
+}
+
+/** Independent material instance per wall segment (avoids shared emissive/color). */
+export function cloneWallMaterial(presetId) {
+  return getWallMaterial(presetId).clone();
+}
+
+/** @param {string} [presetId] */
+export function getWallPresetHex(presetId) {
+  var id = presetId && WALL_COLOR_PRESETS[presetId] ? presetId : "warm-white";
+  return WALL_COLOR_PRESETS[id].color;
+}
+
+function clearWallMaterialCache() {
+  Object.keys(_wallMatCache).forEach(function (key) {
+    if (_wallMatCache[key]) _wallMatCache[key].dispose();
+  });
+  _wallMatCache = {};
+}
+
+export function createWallMaterial(presetId) {
+  var id = presetId && WALL_COLOR_PRESETS[presetId] ? presetId : "warm-white";
+  var preset = WALL_COLOR_PRESETS[id];
+  var base = preset.color;
+
   var wcTex = mkTex(
     512,
     function (ctx, sz) {
-      ctx.fillStyle = "#f5f2ec";
+      ctx.fillStyle = base;
       ctx.fillRect(0, 0, sz, sz);
       for (var i = 0; i < 4000; i++) {
-        var a = Math.random() * 0.04;
+        var a = Math.random() * 0.045;
         ctx.fillStyle = "rgba(0,0,0," + a + ")";
+        ctx.fillRect(Math.random() * sz, Math.random() * sz, 1, 1);
+      }
+      for (var j = 0; j < 1200; j++) {
+        var b = Math.random() * 0.03;
+        ctx.fillStyle = "rgba(255,255,255," + b + ")";
         ctx.fillRect(Math.random() * sz, Math.random() * sz, 1, 1);
       }
     },
@@ -261,7 +313,7 @@ export function createWallMaterial() {
   return new THREE.MeshStandardMaterial({
     map: wcTex,
     roughnessMap: wrTex,
-    roughness: 0.88,
+    roughness: preset.roughness,
     metalness: 0,
   });
 }

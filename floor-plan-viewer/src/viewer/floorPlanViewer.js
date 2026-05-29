@@ -43,8 +43,13 @@ import {
   set3DViewMode,
   set3DFurnitureMovedCallback,
   toggle3DSidePanel,
+  set3DMeasureUnits,
+  set3DWallColor,
+  sync3DWallSwatches,
   toggle3DMoveMode,
 } from "./plan3dViewer.js";
+import { WALL_COLOR_OPTIONS } from "./planTools.js";
+import { getWallPresetHex } from "./plan3dMaterials.js";
 
 var PLAN_SIZE = { width: 1000, height: 1000 };
 
@@ -634,8 +639,19 @@ export function initFloorPlanViewer() {
       });
   }
 
-  var hasSb =
-    !!import.meta.env.VITE_SUPABASE_URL && !!import.meta.env.VITE_SUPABASE_ANON_KEY;
+  function supabaseConfigured() {
+    var u =
+      import.meta.env.VITE_SUPABASE_URL ||
+      (typeof window !== "undefined" && window.__SUPABASE_URL__) ||
+      "";
+    var k =
+      import.meta.env.VITE_SUPABASE_ANON_KEY ||
+      (typeof window !== "undefined" && window.__SUPABASE_ANON_KEY__) ||
+      "";
+    return !!(u && k);
+  }
+
+  var hasSb = supabaseConfigured();
   var hasSbStorage = hasSb && import.meta.env.VITE_SUPABASE_STORAGE === "1";
 
   if (catalogDrawerEl) {
@@ -657,6 +673,26 @@ export function initFloorPlanViewer() {
   var btn3dTop = document.getElementById("btn3d-top");
   var btn3dSide = document.getElementById("btn3d-side");
   var btn3dMove = document.getElementById("btn3d-move");
+  var btn3dUnits = document.getElementById("btn3d-units");
+  var wallPalette = document.getElementById("view3d-wall-palette");
+
+  if (wallPalette) {
+    wallPalette.innerHTML = "";
+    WALL_COLOR_OPTIONS.forEach(function (opt) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "wall-swatch";
+      btn.setAttribute("data-preset", opt.value);
+      btn.style.background = getWallPresetHex(opt.value);
+      btn.title = opt.label;
+      btn.setAttribute("aria-label", opt.label);
+      btn.disabled = true;
+      btn.addEventListener("click", function () {
+        set3DWallColor(opt.value);
+      });
+      wallPalette.appendChild(btn);
+    });
+  }
 
   if (btn3dDollhouse) {
     btn3dDollhouse.addEventListener("click", function () {
@@ -676,6 +712,11 @@ export function initFloorPlanViewer() {
   if (btn3dMove) {
     btn3dMove.addEventListener("click", function () {
       toggle3DMoveMode();
+    });
+  }
+  if (btn3dUnits) {
+    btn3dUnits.addEventListener("change", function () {
+      set3DMeasureUnits(btn3dUnits.value);
     });
   }
 

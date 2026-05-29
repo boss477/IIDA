@@ -81,6 +81,25 @@
             <button type="button" class="view3d-btn" id="btn3d-move" data-mode="move">
               Move
             </button>
+            <span class="view3d-sep"></span>
+            <select id="btn3d-units" class="view3d-units" aria-label="Measurement units">
+              <option value="imperial">ft/in</option>
+              <option value="m">m</option>
+              <option value="cm">cm</option>
+            </select>
+            <span class="view3d-sep"></span>
+            <div id="view3d-wall-paint" class="view3d-wall-paint" aria-label="Wall paint">
+              <button
+                type="button"
+                id="view3d-wall-toggle"
+                class="wall-swatch wall-swatch--toggle"
+                title="Selected wall"
+                aria-expanded="false"
+                aria-label="Wall paint colors"
+                hidden
+              ></button>
+              <div id="view3d-wall-palette" class="view3d-wall-palette" hidden></div>
+            </div>
           </div>
         </div>
       </div>

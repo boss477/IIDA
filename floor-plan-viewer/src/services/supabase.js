@@ -55,6 +55,36 @@ function shapeFromCategory(category) {
   return "chair";
 }
 
+/**
+ * Public image URL for catalog UI (full URL, Supabase Storage path, or empty).
+ * @param {object} row
+ */
+export function resolveCatalogImageUrl(row) {
+  if (!row) return "";
+  var raw =
+    row.image_url != null
+      ? row.image_url
+      : row["image_url"] != null
+        ? row["image_url"]
+        : row["Image URL"];
+  raw = String(raw || "").trim();
+  if (!raw) return "";
+
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  var sb = getSupabase();
+  if (!sb) return raw;
+
+  var path = raw.replace(/^\/+/, "");
+  var bucket = "catalog-images";
+  if (path.indexOf("/") >= 0) {
+    var slash = path.indexOf("/");
+    bucket = path.slice(0, slash);
+    path = path.slice(slash + 1);
+  }
+  return sb.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+}
+
 export function mapShearlingRow(row) {
   var productCode = row.product_code != null ? row.product_code : row["Product Code"];
   var productName = row.product_name != null ? row.product_name : row["Product Name"];
@@ -83,7 +113,7 @@ export function mapShearlingRow(row) {
     seat_height_mm:
       row.seat_height_mm != null ? Number(row.seat_height_mm) : null,
     arm_height_mm: row.arm_height_mm != null ? Number(row.arm_height_mm) : null,
-    image_url: row.image_url != null ? row.image_url : row["image_url"],
+    image_url: resolveCatalogImageUrl(row),
     shape: shapeFromCategory(category),
     product_code: productCode,
   };
@@ -92,10 +122,13 @@ export function mapShearlingRow(row) {
 export async function fetchShearlingCatalog() {
   var sb = getSupabase();
   if (!sb) throw new Error("Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY");
-  var res = await sb
-    .from("shearling_catalog")
-    .select(SHEARLING_SELECT)
-    .order("S.No", { ascending: true });
+  var res = await sb.from("shearling_catalog").select(SHEARLING_SELECT);
   if (res.error) throw res.error;
-  return (res.data || []).map(mapShearlingRow);
+  var rows = res.data || [];
+  rows.sort(function (a, b) {
+    var sa = a["S.No"] != null ? Number(a["S.No"]) : 0;
+    var sbn = b["S.No"] != null ? Number(b["S.No"]) : 0;
+    return sa - sbn;
+  });
+  return rows.map(mapShearlingRow);
 }

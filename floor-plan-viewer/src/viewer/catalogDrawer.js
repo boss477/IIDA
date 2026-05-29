@@ -38,6 +38,10 @@ function saveFavorites(favs) {
   }
 }
 
+function catalogImageUrl(row) {
+  return row && row.image_url ? String(row.image_url).trim() : "";
+}
+
 function formatDims(row) {
   if (!row) return "";
   var w = row.width_mm != null ? Math.round(row.width_mm) : null;
@@ -236,11 +240,32 @@ export function createCatalogDrawer(opts) {
       card.setAttribute("role", "button");
       card.setAttribute("aria-label", "Add " + (r.product_name || r.product_code || "item"));
 
-      var img = document.createElement("img");
-      img.className = "catalog-card__img";
-      img.alt = r.product_name || r.product_code || "Product";
-      if (r.image_url) img.src = r.image_url;
-      else img.src = "";
+      var imgWrap = document.createElement("div");
+      imgWrap.className = "catalog-card__media";
+
+      var imgUrl = catalogImageUrl(r);
+      if (imgUrl) {
+        var img = document.createElement("img");
+        img.className = "catalog-card__img";
+        img.alt = r.product_name || r.product_code || "Product";
+        img.loading = "lazy";
+        img.decoding = "async";
+        img.referrerPolicy = "no-referrer";
+        img.src = imgUrl;
+        img.addEventListener("error", function () {
+          img.remove();
+          var ph = document.createElement("div");
+          ph.className = "catalog-card__placeholder";
+          ph.textContent = "No photo";
+          imgWrap.appendChild(ph);
+        });
+        imgWrap.appendChild(img);
+      } else {
+        var placeholder = document.createElement("div");
+        placeholder.className = "catalog-card__placeholder";
+        placeholder.textContent = "No photo";
+        imgWrap.appendChild(placeholder);
+      }
 
       var body = document.createElement("div");
       body.className = "catalog-card__body";
@@ -279,7 +304,7 @@ export function createCatalogDrawer(opts) {
       body.appendChild(desc);
       body.appendChild(meta);
 
-      card.appendChild(img);
+      card.appendChild(imgWrap);
       card.appendChild(body);
 
       function addThis() {

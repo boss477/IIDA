@@ -353,12 +353,32 @@ button:hover {
   transform: translateY(-1px);
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
 }
-.catalog-card__img {
+.catalog-card__media {
   width: 100%;
   aspect-ratio: 4 / 3;
   background: #f1f5f9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.catalog-card__img {
+  width: 100%;
+  height: 100%;
   display: block;
   object-fit: contain;
+}
+.catalog-card__placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .catalog-card__body {
   padding: 10px 10px 12px;
@@ -476,6 +496,80 @@ button:hover {
   height: 22px;
   background: #e0e0e0;
   margin: 0 2px;
+}
+.view3d-units {
+  padding: 7px 12px;
+  border: none;
+  border-radius: 100px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+}
+.view3d-units:focus {
+  outline: 2px solid #0ea5e9;
+  outline-offset: 1px;
+}
+.view3d-wall-paint {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.view3d-wall-palette {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.18);
+  z-index: 70;
+}
+.view3d-wall-palette:not([hidden]) {
+  display: flex;
+}
+.view3d-wall-palette[hidden] {
+  display: none;
+}
+.view3d-wall-paint--open .wall-swatch--toggle {
+  box-shadow: 0 0 0 2px #0ea5e9;
+}
+.wall-swatch {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px #cbd5e1;
+  cursor: pointer;
+  padding: 0;
+  background: #f5f2ec;
+}
+.wall-swatch:hover:not(:disabled) {
+  transform: scale(1.08);
+}
+.wall-swatch:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.wall-swatch--active {
+  box-shadow: 0 0 0 2px #0ea5e9;
+}
+.wall-swatch--toggle {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  cursor: default;
+  box-shadow: 0 0 0 2px #334155;
+}
+.wall-swatch--toggle:hover {
+  transform: none;
 }
 #view3d-hint {
   position: absolute;

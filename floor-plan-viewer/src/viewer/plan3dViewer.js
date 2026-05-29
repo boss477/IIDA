@@ -8,7 +8,7 @@ import {
   createFloorMaterial,
   createGlassMaterial,
   createTableTopMaterial,
-  createWallMaterial,
+  cloneWallMaterial,
   createWindowFrameMaterial,
   createWoodLegMaterial,
   disposeMaterials,
@@ -31,13 +31,16 @@ import {
   preloadDefaultSofaGlb,
 } from "./plan3dGlb.js";
 import { normToWorld } from "./plan3dMove.js";
-import { getRoomMeasurementDisplay } from "./planTools.js";
+import { getRoomMeasurementDisplay, resolveWallSegmentColor, setWallSegmentColor, wallSegmentKey } from "./planTools.js";
 import {
   catalogRowForItem,
   getFurnitureMeasurementLines,
+  onMeasureUnitsChange,
+  setMeasureUnits,
 } from "./plan3dMeasure.js";
 import { createPlan3DMeasureOverlay } from "./plan3dMeasureOverlay.js";
 import { hideTooltip, showMeasureTooltip, showRoomTooltip } from "./tooltip.js";
+import { getWallPresetHex } from "./plan3dMaterials.js";
 
 var scene, camera, renderer, controls;
 var animFrameId;
@@ -51,6 +54,10 @@ var planToWorld = null;
 var sceneMetrics = { wReal: 10, hReal: 10 };
 var furnitureGroups = [];
 var roomFloorMeshes = [];
+var wallMeshes = [];
+var selectedWallMesh = null;
+var selectedWallSegmentKey = null;
+var wallSelectionHelper = null;
 var interaction = null;
 var measureOverlay = null;
 var onFurnitureMovedCb = null;
@@ -158,6 +165,11 @@ export function init3D(container, data, planImage) {
     onFurnitureHoverEnd: onFurnitureHoverEnd3D,
     onFurnitureSelect: onFurnitureSelect3D,
     onFurnitureDeselect: onFurnitureDeselect3D,
+    getWallMeshes: function () {
+      return wallMeshes;
+    },
+    onWallSelect: onWallSelect3D,
+    onWallDeselect: onWallDeselect3D,
     isSidePanelOpen: is3DSidePanelOpen,
     isSideRoomPickActive: isSideRoomPickActive,
     onFurnitureMoved: function (item) {
@@ -173,7 +185,10 @@ export function init3D(container, data, planImage) {
     planToWorld: planToWorld,
   });
 
+  onMeasureUnitsChange(refresh3DMeasureDisplay);
+
   set3dHint(default3dHintText());
+  sync3DWallSwatches();
   syncChromeActive(viewMode);
 
   function animate() {
@@ -181,6 +196,7 @@ export function init3D(container, data, planImage) {
     var transitioning = updateCameraTransition(camera);
     if (!transitioning && (!interaction || !interaction.isMoveMode())) controls.update();
     if (interaction) interaction.updateHelper();
+    if (wallSelectionHelper && selectedWallMesh) wallSelectionHelper.update();
     renderer.render(scene, camera);
     if (measureOverlay) measureOverlay.render();
   }
@@ -192,6 +208,101 @@ export function set3DFurnitureMovedCallback(cb) {
   onFurnitureMovedCb = cb;
 }
 
+function refresh3DMeasureDisplay() {
+  if (!interaction) return;
+  var grp = interaction.getSelected();
+  if (grp && measureOverlay) {
+    measureOverlay.updateForGroup(grp);
+    var lines = furnitureMeasureLines(grp);
+    set3dHint(lines.length ? lines.join("\n") : default3dHintText());
+  }
+}
+
+/** @param {"imperial"|"m"|"cm"} unit */
+export function set3DMeasureUnits(unit) {
+  setMeasureUnits(unit);
+  refresh3DMeasureDisplay();
+}
+
+/** @param {string} presetId */
+export function set3DWallColor(presetId) {
+  if (!activePlanData || !presetId || !selectedWallSegmentKey) return;
+  setWallSegmentColor(activePlanData, selectedWallSegmentKey, presetId);
+  if (selectedWallMesh) {
+    selectedWallMesh.material = cloneWallMaterial(presetId);
+    selectedWallMesh.userData.wallPreset = presetId;
+  } else {
+    rebuild3DScene();
+  }
+  closeWallPaintPanel();
+  deselectWallSegment();
+  set3dHint(default3dHintText());
+}
+
+function openWallPaintPanel() {
+  var paint = document.getElementById("view3d-wall-paint");
+  var palette = document.getElementById("view3d-wall-palette");
+  var toggle = document.getElementById("view3d-wall-toggle");
+  if (palette) palette.hidden = false;
+  if (toggle) toggle.setAttribute("aria-expanded", "true");
+  if (paint) paint.classList.add("view3d-wall-paint--open");
+}
+
+function closeWallPaintPanel() {
+  var paint = document.getElementById("view3d-wall-paint");
+  var palette = document.getElementById("view3d-wall-palette");
+  var toggle = document.getElementById("view3d-wall-toggle");
+  if (palette) palette.hidden = true;
+  if (toggle) toggle.setAttribute("aria-expanded", "false");
+  if (paint) paint.classList.remove("view3d-wall-paint--open");
+}
+
+export function sync3DWallSwatches() {
+  var toggle = document.getElementById("view3d-wall-toggle");
+  var palette = document.getElementById("view3d-wall-palette");
+  if (!palette) return;
+
+  var preset = null;
+  if (selectedWallSegmentKey && activePlanData) {
+    preset = resolveWallSegmentColor(
+      activePlanData,
+      selectedWallSegmentKey,
+      selectedWallMesh && selectedWallMesh.userData.room
+    );
+  }
+
+  if (toggle) {
+    if (preset && selectedWallSegmentKey) {
+      toggle.hidden = false;
+      toggle.style.background = getWallPresetHex(preset);
+      toggle.title = "Selected wall";
+    } else {
+      toggle.hidden = true;
+    }
+  }
+
+  palette.querySelectorAll(".wall-swatch[data-preset]").forEach(function (btn) {
+    var id = btn.getAttribute("data-preset");
+    btn.classList.toggle("wall-swatch--active", !!preset && id === preset);
+    btn.disabled = !selectedWallSegmentKey;
+  });
+}
+
+/** @deprecated use sync3DWallSwatches */
+export function sync3DWallColorSelect() {
+  sync3DWallSwatches();
+}
+
+export function rebuild3DScene() {
+  if (!sceneContent || !activePlanData) return;
+  buildSceneGeometry();
+  preloadDefaultSofaGlb()
+    .then(function () {
+      refreshSofaGlbMeshes();
+    })
+    .catch(function () {});
+}
+
 export function toggle3DMoveMode() {
   if (!interaction) return false;
   if (interaction.isMoveMode()) {
@@ -201,6 +312,7 @@ export function toggle3DMoveMode() {
     return false;
   }
   close3DSidePanel();
+  deselectWallSegment();
   interaction.enterMoveMode();
   set3dHint(default3dHintText());
   syncChromeActive("move");
@@ -225,7 +337,10 @@ function default3dHintText() {
   if (interaction && interaction.isMoveMode()) {
     return "Drag furniture · snaps to walls";
   }
-  return "Hover a room or furniture for measurements";
+  if (selectedWallSegmentKey) {
+    return "Wall selected — pick a paint color";
+  }
+  return "Click a wall to paint · hover furniture or rooms for measurements";
 }
 
 function furnitureMeasureLines(grp) {
@@ -300,6 +415,7 @@ function onFurnitureHoverEnd3D() {
 }
 
 function onFurnitureSelect3D(grp) {
+  deselectWallSegment();
   if (measureOverlay) measureOverlay.updateForGroup(grp);
   var lines = furnitureMeasureLines(grp);
   set3dHint(lines.length ? lines.join("\n") : default3dHintText());
@@ -415,6 +531,123 @@ function clearSideRoomSelection() {
   updateRoomFloorHighlight(null, null);
   onSideRoomHoverEnd();
   if (interaction) interaction.setSidePickMode(false);
+  sync3DWallSwatches();
+}
+
+function clearWallHighlight() {
+  if (wallSelectionHelper) {
+    scene.remove(wallSelectionHelper);
+    wallSelectionHelper.geometry.dispose();
+    wallSelectionHelper = null;
+  }
+}
+
+function highlightWallMesh(mesh) {
+  clearWallHighlight();
+  if (!mesh || !scene) return;
+  wallSelectionHelper = new THREE.BoxHelper(mesh, 0x0ea5e9);
+  wallSelectionHelper.material.linewidth = 2;
+  scene.add(wallSelectionHelper);
+}
+
+function selectWallSegment(mesh) {
+  selectedWallMesh = mesh || null;
+  selectedWallSegmentKey = mesh && mesh.userData ? mesh.userData.segmentKey : null;
+  highlightWallMesh(selectedWallMesh);
+  document.body.classList.toggle("view3d-has-wall-selection", !!selectedWallSegmentKey);
+  if (selectedWallSegmentKey) openWallPaintPanel();
+  sync3DWallSwatches();
+}
+
+function deselectWallSegment() {
+  if (!selectedWallSegmentKey && !selectedWallMesh) {
+    closeWallPaintPanel();
+    return;
+  }
+  selectedWallMesh = null;
+  selectedWallSegmentKey = null;
+  clearWallHighlight();
+  closeWallPaintPanel();
+  document.body.classList.remove("view3d-has-wall-selection");
+  sync3DWallSwatches();
+}
+
+function onWallSelect3D(mesh) {
+  if (!mesh || !mesh.userData || !mesh.userData.isWall) return;
+  selectWallSegment(mesh);
+  set3dHint(default3dHintText());
+  var tip = document.getElementById("tip");
+  if (tip) hideTooltip(tip);
+}
+
+function onWallDeselect3D() {
+  deselectWallSegment();
+  set3dHint(default3dHintText());
+}
+
+function restoreWallSelectionAfterRebuild(prevKey) {
+  if (!prevKey) return;
+  var found = null;
+  for (var i = 0; i < wallMeshes.length; i++) {
+    if (wallMeshes[i].userData.segmentKey === prevKey) {
+      found = wallMeshes[i];
+      break;
+    }
+  }
+  if (found) {
+    selectedWallMesh = found;
+    selectedWallSegmentKey = prevKey;
+    highlightWallMesh(found);
+  } else {
+    selectedWallMesh = null;
+    selectedWallSegmentKey = null;
+  }
+  sync3DWallSwatches();
+}
+
+function findRoomForNormPoint(nx, ny) {
+  var rooms = (activePlanData && activePlanData.rooms) || [];
+  for (var i = 0; i < rooms.length; i++) {
+    var room = rooms[i];
+    if (room.polygon && room.polygon.length >= 3 && pointInPolygon({ x: nx, y: ny }, room.polygon)) {
+      return room;
+    }
+  }
+  return null;
+}
+
+function roomForWallSegment(p0, p1) {
+  if (!p0 || !p1) return null;
+  var mx = (p0.x + p1.x) / 2;
+  var my = (p0.y + p1.y) / 2;
+  var room = findRoomForNormPoint(mx, my);
+  if (room) return room;
+  var dx = p1.x - p0.x;
+  var dy = p1.y - p0.y;
+  var len = Math.hypot(dx, dy) || 1;
+  var ox = (-dy / len) * 0.003;
+  var oy = (dx / len) * 0.003;
+  return findRoomForNormPoint(mx + ox, my + oy) || findRoomForNormPoint(mx - ox, my - oy);
+}
+
+function addWallSegment(w1, w2, thick, wallHeight, wallMat, parent, meta) {
+  var dx = w2.x - w1.x;
+  var dz = w2.z - w1.z;
+  var len = Math.hypot(dx, dz);
+  if (len < 0.01) return null;
+  var wallGeo = new THREE.BoxGeometry(len, wallHeight, thick);
+  var wallMesh = new THREE.Mesh(wallGeo, wallMat);
+  wallMesh.position.set((w1.x + w2.x) / 2, wallHeight / 2, (w1.z + w2.z) / 2);
+  wallMesh.rotation.y = -Math.atan2(dz, dx);
+  wallMesh.castShadow = true;
+  wallMesh.receiveShadow = true;
+  wallMesh.userData.isWall = true;
+  wallMesh.userData.segmentKey = meta && meta.segmentKey ? meta.segmentKey : "";
+  wallMesh.userData.wallPreset = meta && meta.presetId ? meta.presetId : "warm-white";
+  wallMesh.userData.room = meta && meta.room ? meta.room : null;
+  parent.add(wallMesh);
+  wallMeshes.push(wallMesh);
+  return wallMesh;
 }
 
 function updateRoomFloorHighlight() {
@@ -478,6 +711,8 @@ function selectSideRoom(room) {
   buildSideThumbnails(room);
   if (interaction) interaction.setSidePickMode(false);
   set3dHint(roomLabel(room) + " — pick a side view");
+  deselectWallSegment();
+  sync3DWallSwatches();
   var panel = document.getElementById("view3d-side-panel");
   if (panel) panel.hidden = false;
   syncChromeActive("side");
@@ -558,6 +793,9 @@ export function dispose3D() {
   close3DSidePanel();
   exit3DMoveMode();
   clearSideRoomSelection();
+  clearWallHighlight();
+  deselectWallSegment();
+  wallMeshes = [];
   roomFloorMeshes = [];
   if (measureOverlay) {
     measureOverlay.dispose();
@@ -687,6 +925,8 @@ function addRoomWindow(room, toWorld, wallHeight, matFr, matG, parent) {
 function buildSceneGeometry() {
   if (!activePlanData || !sceneContent) return;
 
+  var prevWallKey = selectedWallSegmentKey;
+
   disposeSceneGraph(sceneContent);
   while (sceneContent.children.length) sceneContent.remove(sceneContent.children[0]);
 
@@ -713,11 +953,12 @@ function buildSceneGeometry() {
   sceneBounds = computeSceneBounds(activePlanData.rooms || [], toWorld);
   furnitureGroups = [];
   roomFloorMeshes = [];
+  wallMeshes = [];
 
-  var wallMat = createWallMaterial();
   var matFr = createWindowFrameMaterial();
   var matG = createGlassMaterial();
   var wallHeight = 2.7;
+  var defaultThick = 0.006 * Math.max(imgW, imgH) * mpp;
 
   (activePlanData.rooms || []).forEach(function (room) {
     if (!room.polygon || room.polygon.length < 3) return;
@@ -748,40 +989,41 @@ function buildSceneGeometry() {
 
   var walls = (activePlanData.walls || []).slice();
   if (walls.length === 0 && activePlanData.rooms && activePlanData.rooms.length) {
-    activePlanData.rooms.forEach(function (r) {
+    activePlanData.rooms.forEach(function (r, ri) {
       if (r.polygon && r.polygon.length >= 3) {
         var pts = r.polygon.map(function (p) {
           return { x: p.x, y: p.y };
         });
         pts.push({ x: pts[0].x, y: pts[0].y });
-        walls.push({ points: pts, thickness: 0.006 });
+        walls.push({
+          points: pts,
+          thickness: 0.006,
+          room: r,
+          id: "room-" + ri + "-outline",
+        });
       }
     });
   }
 
-  walls.forEach(function (wall) {
+  walls.forEach(function (wall, wallIndex) {
     var pts = wall.points;
     if (!pts || pts.length < 2) return;
-    var thick = (wall.thickness || 0.006) * Math.max(imgW, imgH) * mpp;
+    var thick =
+      wall.thickness != null ? wall.thickness * Math.max(imgW, imgH) * mpp : defaultThick;
+    var sourceId = wall.id ? "wall-" + wallIndex + "-" + wall.id : "wall-" + wallIndex;
 
     for (var wi = 0; wi < pts.length - 1; wi++) {
+      var room = wall.room || roomForWallSegment(pts[wi], pts[wi + 1]);
+      var segmentKey = wallSegmentKey(sourceId, wi);
+      var presetId = resolveWallSegmentColor(activePlanData, segmentKey, room);
+      var wallMat = cloneWallMaterial(presetId);
       var w1 = toWorld(pts[wi]);
       var w2 = toWorld(pts[wi + 1]);
-
-      var dx = w2.x - w1.x;
-      var dz = w2.z - w1.z;
-      var len = Math.hypot(dx, dz);
-      if (len < 0.01) continue;
-
-      var wallGeo = new THREE.BoxGeometry(len, wallHeight, thick);
-      var wallMesh = new THREE.Mesh(wallGeo, wallMat);
-      var midX = (w1.x + w2.x) / 2;
-      var midZ = (w1.z + w2.z) / 2;
-      wallMesh.position.set(midX, wallHeight / 2, midZ);
-      wallMesh.rotation.y = -Math.atan2(dz, dx);
-      wallMesh.castShadow = true;
-      wallMesh.receiveShadow = true;
-      sceneContent.add(wallMesh);
+      addWallSegment(w1, w2, thick, wallHeight, wallMat, sceneContent, {
+        segmentKey: segmentKey,
+        presetId: presetId,
+        room: room,
+      });
     }
   });
 
@@ -793,6 +1035,8 @@ function buildSceneGeometry() {
   });
 
   if (!hasSofaOnPlan) addDefaultLivingRoomSofa(wReal, hReal);
+
+  restoreWallSelectionAfterRebuild(prevWallKey);
 }
 
 function furnitureDimsForItem(item, catalogRow, wReal, hReal) {
