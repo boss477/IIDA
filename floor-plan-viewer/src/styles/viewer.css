@@ -729,27 +729,17 @@ body.view3d-move-mode.view3d-dragging #viewport3d canvas {
   fill: none;
 }
 #overlay .plan-room-bg {
-  opacity: 0.12;
+  opacity: 0.35;
 }
 #overlay .plan-room-fill {
-  opacity: 1;
-  stroke: rgba(30, 27, 24, 0.1);
+  opacity: 0.94;
+  stroke: rgba(30, 27, 24, 0.14);
   stroke-width: 1;
-  transition: stroke 0.18s ease, stroke-width 0.18s ease;
+  transition: stroke 0.18s ease, stroke-width 0.18s ease, opacity 0.18s ease;
 }
 #overlay .plan-room-fill[data-active="1"] {
-  stroke: rgba(80, 150, 220, 0.45);
-  stroke-width: 1.5;
-}
-#overlay .plan-label {
-  pointer-events: none;
-  font-family: Georgia, "Times New Roman", serif;
-  fill: #1a1a1a;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-#overlay .plan-label[data-active="1"] {
-  opacity: 1;
+  stroke: rgba(30, 27, 24, 0.42);
+  stroke-width: 2;
 }
 #overlay .walkable-boundary {
   pointer-events: none;
@@ -760,6 +750,11 @@ body.view3d-move-mode.view3d-dragging #viewport3d canvas {
   stroke-linejoin: round;
   stroke-linecap: round;
   pointer-events: none;
+}
+#overlay .plan-label {
+  pointer-events: none;
+  font-family: Georgia, "Times New Roman", serif;
+  fill: #2a1d12;
 }
 #overlay .plan-label-name {
   font-size: 15px;
