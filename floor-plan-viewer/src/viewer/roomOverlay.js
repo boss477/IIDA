@@ -67,4 +67,8 @@ export function updateRoomHighlight(svg, activeId) {
     var id = el.getAttribute("data-room-fill");
     el.setAttribute("data-active", id === activeId ? "1" : "0");
   });
+  svg.querySelectorAll("[data-room-label]").forEach(function (el) {
+    var id = el.getAttribute("data-room-label");
+    el.setAttribute("data-active", id === activeId ? "1" : "0");
+  });
 }

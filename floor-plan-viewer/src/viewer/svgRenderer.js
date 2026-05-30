@@ -15,7 +15,7 @@ import {
   renderWallVertexHandles,
 } from "./geometryOverlays.js";
 import { getSofaPalette } from "../lib/sofaColors.js";
-import { ensurePhotoFloorPatterns, photoPatternForRoom } from "./floorPhotoTextures.js";
+import { ensurePhotoFloorPatterns, photoPatternForRoom, photoBaseColorForRoom, roomMatchesActive } from "./floorPhotoTextures.js";
 
 const NS = "http://www.w3.org/2000/svg";
 
@@ -51,15 +51,7 @@ function patternForRoom(room) {
 }
 
 function baseColorForRoom(room) {
-  var flooring = String(room.flooring || "").toLowerCase();
-  var name = String(room.type || room.name || "").toLowerCase();
-  if (room.color) return room.color;
-  if (name.indexOf("kitchen") >= 0) return "#fef8e0";
-  if (name.indexOf("bath") >= 0 || flooring === "tile") return "#eaf4f8";
-  if (name.indexOf("bed") >= 0) return "#fdfcf8";
-  if (name.indexOf("living") >= 0 || name.indexOf("dining") >= 0) return "#faf5f0";
-  if (name.indexOf("balcon") >= 0 || name.indexOf("patio") >= 0 || flooring === "stone") return "#f0f0f0";
-  return "#fafafa";
+  return photoBaseColorForRoom(room);
 }
 
 function pointsAttr(points, imageWidth, imageHeight) {
@@ -656,12 +648,16 @@ function renderRugItem(g, w, h) {
   g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h, fill: "url(#photo-carpet)", stroke: "#e0d8cc", rx: 6 }));
 }
 
-function renderLabels(svg, rooms, size, calibrationState) {
+function renderLabels(svg, rooms, size, calibrationState, activeRoomId) {
   (rooms || []).forEach(function (room) {
     if (!room.polygon || room.polygon.length < 3) return;
+    var roomKey = room.id || room.name || "";
+    var isActive = roomMatchesActive(activeRoomId, room);
     var point = room.labelPoint || polygonCentroid(room.polygon);
     var g = setAttrs(svgEl("g"), {
       class: "plan-label",
+      "data-room-label": roomKey,
+      "data-active": isActive ? "1" : "0",
       transform: "translate(" + point.x * size.width + " " + point.y * size.height + ")",
     });
 
@@ -669,10 +665,10 @@ function renderLabels(svg, rooms, size, calibrationState) {
       class: "plan-label-name",
       "text-anchor": "middle",
       "dominant-baseline": "middle",
-      "font-family": "Arial, Helvetica, sans-serif",
-      "font-size": 13,
-      "font-weight": 600,
-      fill: "#2c2c2c",
+      "font-family": "Georgia, \"Times New Roman\", serif",
+      "font-size": 14,
+      "font-weight": 700,
+      fill: "#1a1a1a",
     });
     name.textContent = room.name || room.id || "Room";
     g.appendChild(name);
@@ -691,10 +687,10 @@ function renderLabels(svg, rooms, size, calibrationState) {
           "text-anchor": "middle",
           "dominant-baseline": "middle",
           dy: 1.35 * line + "em",
-          "font-family": "Arial, Helvetica, sans-serif",
-          "font-size": 10,
-          "font-weight": 500,
-          fill: "#444444",
+          "font-family": "Georgia, \"Times New Roman\", serif",
+          "font-size": 11,
+          "font-weight": 600,
+          fill: "#333333",
           textContent: dimForLabel,
         })
       );
@@ -707,10 +703,10 @@ function renderLabels(svg, rooms, size, calibrationState) {
           "text-anchor": "middle",
           "dominant-baseline": "middle",
           dy: 1.35 * line + "em",
-          "font-family": "Arial, Helvetica, sans-serif",
-          "font-size": 9,
-          "font-weight": 400,
-          fill: "#666666",
+          "font-family": "Georgia, \"Times New Roman\", serif",
+          "font-size": 10,
+          "font-weight": 500,
+          fill: "#555555",
           textContent: areaForLabel,
         })
       );
@@ -748,7 +744,7 @@ function renderHitHighlights(svg, rooms, activeRoomId, size) {
         class: "hi",
         "data-room": room.id || room.name || "",
         points: pointsAttr(room.polygon, size.width, size.height),
-        opacity: activeRoomId === room.id || activeRoomId === room.name ? 1 : 0,
+        opacity: roomMatchesActive(activeRoomId, room) ? 1 : 0,
       })
     );
   });
@@ -786,7 +782,7 @@ export function renderPlan(svg, data, activeRoomId, selectedFurnitureIds, size, 
     size,
     opts.furnitureRenderCtx || null
   );
-  renderLabels(svg, data.rooms || [], size, opts.calibrationState || null);
+  renderLabels(svg, data.rooms || [], size, opts.calibrationState || null, activeRoomId);
   renderSelectedRoomOutline(svg, data.rooms || [], opts.selectedRoomId || null, size);
   if (opts.roomMeasureBadge) {
     renderRoomMeasurementBadge(
