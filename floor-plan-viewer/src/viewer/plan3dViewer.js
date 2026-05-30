@@ -39,7 +39,8 @@ import {
   setMeasureUnits,
 } from "./plan3dMeasure.js";
 import { createPlan3DMeasureOverlay } from "./plan3dMeasureOverlay.js";
-import { hideTooltip, showMeasureTooltip, showRoomTooltip } from "./tooltip.js";
+import { hideTooltip, showFurnitureTooltip, showRoomTooltip } from "./tooltip.js";
+import { createFurnitureToolbar3d } from "./furnitureToolbar3d.js";
 import { getWallPresetHex } from "./plan3dMaterials.js";
 
 var scene, camera, renderer, controls;
@@ -61,6 +62,9 @@ var wallSelectionHelper = null;
 var interaction = null;
 var measureOverlay = null;
 var onFurnitureMovedCb = null;
+var on3DFurnitureActionCb = null;
+var on3DFurnitureSelectCb = null;
+var furnitureToolbar3d = null;
 var selectedSideRoom = null;
 var hoveredSideRoom = null;
 var selectedRoomBounds = null;
@@ -185,6 +189,15 @@ export function init3D(container, data, planImage) {
     planToWorld: planToWorld,
   });
 
+  if (furnitureToolbar3d && furnitureToolbar3d.el.parentNode) {
+    furnitureToolbar3d.el.parentNode.removeChild(furnitureToolbar3d.el);
+  }
+  furnitureToolbar3d = createFurnitureToolbar3d(container, {
+    onAction: function (actionId) {
+      if (on3DFurnitureActionCb) on3DFurnitureActionCb(actionId);
+    },
+  });
+
   onMeasureUnitsChange(refresh3DMeasureDisplay);
 
   set3dHint(default3dHintText());
@@ -197,6 +210,13 @@ export function init3D(container, data, planImage) {
     if (!transitioning && (!interaction || !interaction.isMoveMode())) controls.update();
     if (interaction) interaction.updateHelper();
     if (wallSelectionHelper && selectedWallMesh) wallSelectionHelper.update();
+    if (furnitureToolbar3d && interaction) {
+      furnitureToolbar3d.updatePosition(
+        interaction.getSelected(),
+        camera,
+        renderer.domElement
+      );
+    }
     renderer.render(scene, camera);
     if (measureOverlay) measureOverlay.render();
   }
@@ -208,13 +228,22 @@ export function set3DFurnitureMovedCallback(cb) {
   onFurnitureMovedCb = cb;
 }
 
+/** @param {(itemId: string) => void} cb */
+export function set3DFurnitureSelectCallback(cb) {
+  on3DFurnitureSelectCb = cb;
+}
+
+/** @param {(actionId: string) => void} cb */
+export function set3DFurnitureActionCallback(cb) {
+  on3DFurnitureActionCb = cb;
+}
+
 function refresh3DMeasureDisplay() {
   if (!interaction) return;
   var grp = interaction.getSelected();
   if (grp && measureOverlay) {
     measureOverlay.updateForGroup(grp);
-    var lines = furnitureMeasureLines(grp);
-    set3dHint(lines.length ? lines.join("\n") : default3dHintText());
+    set3dHint(default3dHintText());
   }
 }
 
@@ -293,14 +322,31 @@ export function sync3DWallColorSelect() {
   sync3DWallSwatches();
 }
 
-export function rebuild3DScene() {
+export function rebuild3DScene(selectedItemId) {
   if (!sceneContent || !activePlanData) return;
+  if (selectedItemId == null && interaction && interaction.getSelected()) {
+    var sel = interaction.getSelected().userData.furnitureItem;
+    if (sel) selectedItemId = sel.id;
+  }
   buildSceneGeometry();
+  var restoreId = selectedItemId;
   preloadDefaultSofaGlb()
     .then(function () {
       refreshSofaGlbMeshes();
+      if (restoreId) restore3DFurnitureSelection(restoreId);
     })
     .catch(function () {});
+}
+
+/** @param {string} itemId */
+export function restore3DFurnitureSelection(itemId) {
+  if (!interaction || !itemId) return;
+  var grp = null;
+  furnitureGroups.forEach(function (g) {
+    if (g.userData.furnitureItem && g.userData.furnitureItem.id === itemId) grp = g;
+  });
+  if (grp) interaction.select(grp);
+  else interaction.deselect();
 }
 
 export function toggle3DMoveMode() {
@@ -340,7 +386,7 @@ function default3dHintText() {
   if (selectedWallSegmentKey) {
     return "Wall selected — pick a paint color";
   }
-  return "Click a wall to paint · hover furniture or rooms for measurements";
+  return "Click a wall to paint · select furniture for actions";
 }
 
 function furnitureMeasureLines(grp) {
@@ -392,12 +438,26 @@ function showRoomMeasureTooltip(room, e) {
 }
 
 function onRoomHoverGeneral(room, e) {
+  if (interaction && interaction.getSelected()) {
+    var selectedTip = document.getElementById("tip");
+    if (selectedTip) hideTooltip(selectedTip);
+    return;
+  }
+  if (viewMode === "side") {
+    var sideTip = document.getElementById("tip");
+    if (sideTip) hideTooltip(sideTip);
+    return;
+  }
   showRoomMeasureTooltip(room, e);
 }
 
 function onRoomHoverGeneralEnd() {
   if (interaction && interaction.getSelected()) return;
   var tip = document.getElementById("tip");
+  if (viewMode === "side") {
+    if (tip) hideTooltip(tip);
+    return;
+  }
   if (tip && !is3DSidePanelOpen()) hideTooltip(tip);
 }
 
@@ -405,7 +465,7 @@ function onFurnitureHover3D(grp, e) {
   var lines = furnitureMeasureLines(grp);
   var tip = document.getElementById("tip");
   if (!tip || !lines.length) return;
-  showMeasureTooltip(tip, e, lines[0], lines.slice(1));
+  showFurnitureTooltip(tip, e, lines[0]);
 }
 
 function onFurnitureHoverEnd3D() {
@@ -417,12 +477,20 @@ function onFurnitureHoverEnd3D() {
 function onFurnitureSelect3D(grp) {
   deselectWallSegment();
   if (measureOverlay) measureOverlay.updateForGroup(grp);
-  var lines = furnitureMeasureLines(grp);
-  set3dHint(lines.length ? lines.join("\n") : default3dHintText());
+  set3dHint(default3dHintText());
+  var item = grp && grp.userData ? grp.userData.furnitureItem : null;
+  if (item && on3DFurnitureSelectCb) on3DFurnitureSelectCb(item.id);
+  if (furnitureToolbar3d) {
+    furnitureToolbar3d.show(grp, { goesWithDisabled: true });
+    if (renderer && renderer.domElement) {
+      furnitureToolbar3d.updatePosition(grp, camera, renderer.domElement);
+    }
+  }
 }
 
 function onFurnitureDeselect3D() {
   if (measureOverlay) measureOverlay.clear();
+  if (furnitureToolbar3d) furnitureToolbar3d.hide();
   set3dHint(default3dHintText());
   var tip = document.getElementById("tip");
   if (tip) hideTooltip(tip);
@@ -490,6 +558,8 @@ export function flyTo3DSideView(index) {
       card.classList.toggle("view3d-tcard--active", i === index);
     });
   }
+  var tip = document.getElementById("tip");
+  if (tip) hideTooltip(tip);
   close3DSidePanel();
 }
 
@@ -628,6 +698,153 @@ function roomForWallSegment(p0, p1) {
   var ox = (-dy / len) * 0.003;
   var oy = (dx / len) * 0.003;
   return findRoomForNormPoint(mx + ox, my + oy) || findRoomForNormPoint(mx - ox, my - oy);
+}
+
+function roundNorm(v) {
+  return Math.round(v * 10000) / 10000;
+}
+
+/** Infinite line + interval for a normalized plan segment. */
+function segmentLineInfo(p0, p1) {
+  var dx = p1.x - p0.x;
+  var dy = p1.y - p0.y;
+  var len = Math.hypot(dx, dy);
+  if (len < 1e-8) return null;
+  var ux = dx / len;
+  var uy = dy / len;
+  var nx = -uy;
+  var ny = ux;
+  var d = nx * p0.x + ny * p0.y;
+  if (d < 0) {
+    nx = -nx;
+    ny = -ny;
+    d = -d;
+    ux = -ux;
+    uy = -uy;
+  }
+  var t0 = p0.x * ux + p0.y * uy;
+  var t1 = p1.x * ux + p1.y * uy;
+  return {
+    key: roundNorm(nx) + "," + roundNorm(ny) + "," + roundNorm(d),
+    ux: ux,
+    uy: uy,
+    nx: nx,
+    ny: ny,
+    d: d,
+    tMin: Math.min(t0, t1),
+    tMax: Math.max(t0, t1),
+  };
+}
+
+function normPointFromLine(line, t) {
+  return {
+    x: line.nx * line.d + line.ux * t,
+    y: line.ny * line.d + line.uy * t,
+  };
+}
+
+function resolveMergedWallPreset(contributors, data) {
+  var map = data && data.wallSegmentColors;
+  var i;
+  if (map) {
+    for (i = 0; i < contributors.length; i++) {
+      if (map[contributors[i].segmentKey]) return map[contributors[i].segmentKey];
+    }
+  }
+  var best = contributors[0];
+  var bestLen = 0;
+  for (i = 0; i < contributors.length; i++) {
+    var c = contributors[i];
+    var len = Math.hypot(c.p1.x - c.p0.x, c.p1.y - c.p0.y);
+    if (len > bestLen) {
+      bestLen = len;
+      best = c;
+    }
+  }
+  return resolveWallSegmentColor(data, best.segmentKey, best.room);
+}
+
+/**
+ * Merge collinear wall segments on the same plane (adjacent rooms share edges
+ * with different endpoint splits — causes z-fighting and color seams).
+ * @param {object[]} walls
+ * @param {object} data
+ */
+function mergeWallSegmentsFromWalls(walls, data) {
+  var raw = [];
+  walls.forEach(function (wall, wallIndex) {
+    var pts = wall.points;
+    if (!pts || pts.length < 2) return;
+    var sourceId = wall.id ? "wall-" + wallIndex + "-" + wall.id : "wall-" + wallIndex;
+    for (var wi = 0; wi < pts.length - 1; wi++) {
+      var room = wall.room || roomForWallSegment(pts[wi], pts[wi + 1]);
+      var segmentKey = wallSegmentKey(sourceId, wi);
+      raw.push({
+        p0: pts[wi],
+        p1: pts[wi + 1],
+        room: room,
+        segmentKey: segmentKey,
+        info: segmentLineInfo(pts[wi], pts[wi + 1]),
+      });
+    }
+  });
+
+  var groups = {};
+  raw.forEach(function (seg) {
+    if (!seg.info) return;
+    if (!groups[seg.info.key]) {
+      groups[seg.info.key] = {
+        ux: seg.info.ux,
+        uy: seg.info.uy,
+        nx: seg.info.nx,
+        ny: seg.info.ny,
+        d: seg.info.d,
+        parts: [],
+      };
+    }
+    groups[seg.info.key].parts.push({
+      tMin: seg.info.tMin,
+      tMax: seg.info.tMax,
+      seg: seg,
+    });
+  });
+
+  var merged = [];
+  Object.keys(groups).forEach(function (key) {
+    var g = groups[key];
+    g.parts.sort(function (a, b) {
+      return a.tMin - b.tMin;
+    });
+    var cur = null;
+    g.parts.forEach(function (part) {
+      if (!cur) {
+        cur = { tMin: part.tMin, tMax: part.tMax, contributors: [part.seg] };
+        return;
+      }
+      if (part.tMin <= cur.tMax + 1e-5) {
+        cur.tMax = Math.max(cur.tMax, part.tMax);
+        cur.contributors.push(part.seg);
+      } else {
+        merged.push(buildMergedWallSegment(g, cur, data));
+        cur = { tMin: part.tMin, tMax: part.tMax, contributors: [part.seg] };
+      }
+    });
+    if (cur) merged.push(buildMergedWallSegment(g, cur, data));
+  });
+  return { rawCount: raw.length, merged: merged };
+}
+
+function buildMergedWallSegment(line, interval, data) {
+  var contributors = interval.contributors;
+  var primary = contributors[0];
+  var presetId = resolveMergedWallPreset(contributors, data);
+  return {
+    p0: normPointFromLine(line, interval.tMin),
+    p1: normPointFromLine(line, interval.tMax),
+    room: primary.room,
+    segmentKey: primary.segmentKey,
+    presetId: presetId,
+  };
 }
 
 function addWallSegment(w1, w2, thick, wallHeight, wallMat, parent, meta) {
@@ -804,6 +1021,10 @@ export function dispose3D() {
   if (interaction) {
     interaction.dispose();
     interaction = null;
+  }
+  if (furnitureToolbar3d) {
+    furnitureToolbar3d.hide();
+    furnitureToolbar3d = null;
   }
   furnitureGroups = [];
   if (animFrameId) {
@@ -1005,26 +1226,18 @@ function buildSceneGeometry() {
     });
   }
 
-  walls.forEach(function (wall, wallIndex) {
-    var pts = wall.points;
-    if (!pts || pts.length < 2) return;
-    var thick =
-      wall.thickness != null ? wall.thickness * Math.max(imgW, imgH) * mpp : defaultThick;
-    var sourceId = wall.id ? "wall-" + wallIndex + "-" + wall.id : "wall-" + wallIndex;
+  var wallMerge = mergeWallSegmentsFromWalls(walls, activePlanData);
 
-    for (var wi = 0; wi < pts.length - 1; wi++) {
-      var room = wall.room || roomForWallSegment(pts[wi], pts[wi + 1]);
-      var segmentKey = wallSegmentKey(sourceId, wi);
-      var presetId = resolveWallSegmentColor(activePlanData, segmentKey, room);
-      var wallMat = cloneWallMaterial(presetId);
-      var w1 = toWorld(pts[wi]);
-      var w2 = toWorld(pts[wi + 1]);
-      addWallSegment(w1, w2, thick, wallHeight, wallMat, sceneContent, {
-        segmentKey: segmentKey,
-        presetId: presetId,
-        room: room,
-      });
-    }
+  wallMerge.merged.forEach(function (seg) {
+    var thick = defaultThick;
+    var wallMat = cloneWallMaterial(seg.presetId);
+    var w1 = toWorld(seg.p0);
+    var w2 = toWorld(seg.p1);
+    addWallSegment(w1, w2, thick, wallHeight, wallMat, sceneContent, {
+      segmentKey: seg.segmentKey,
+      presetId: seg.presetId,
+      room: seg.room,
+    });
   });
 
   var hasSofaOnPlan = false;

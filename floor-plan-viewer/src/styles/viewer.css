@@ -571,6 +571,28 @@ button:hover {
 .wall-swatch--toggle:hover {
   transform: none;
 }
+#view3d-furniture-toolbar {
+  position: absolute;
+  z-index: 65;
+  transform: translate(-50%, calc(-100% - 10px));
+  pointer-events: none;
+}
+.view3d-furniture-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 8px;
+  background: #fff;
+  border-radius: 100px;
+  box-shadow: 0 4px 28px rgba(0, 0, 0, 0.16);
+  pointer-events: all;
+}
+.view3d-furniture-btn--danger {
+  color: #b91c1c;
+}
+.view3d-furniture-btn--danger:hover {
+  background: #fee2e2 !important;
+}
 #view3d-hint {
   position: absolute;
   top: 16px;

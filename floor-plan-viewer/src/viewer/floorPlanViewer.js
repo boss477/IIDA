@@ -40,8 +40,11 @@ import {
   init3D,
   dispose3D,
   resize3D,
+  rebuild3DScene,
   set3DViewMode,
   set3DFurnitureMovedCallback,
+  set3DFurnitureSelectCallback,
+  set3DFurnitureActionCallback,
   toggle3DSidePanel,
   set3DMeasureUnits,
   set3DWallColor,
@@ -272,6 +275,7 @@ export function initFloorPlanViewer() {
     } else if (actionId === "remove") {
       removeSelectedFurniture();
     }
+    if (activeMode === "3D") rebuild3DScene(getPrimaryFurnitureId());
   }
 
   function updateFurnitureSelectionUi(pointerEvent) {
@@ -285,6 +289,12 @@ export function initFloorPlanViewer() {
       if (floatingToolbar) floatingToolbar.hide();
       return;
     }
+    var primaryId = getPrimaryFurnitureId();
+    var item = primaryId
+      ? data.furniture.find(function (f) {
+          return f.id === primaryId;
+        })
+      : null;
     if (!item) {
       furnitureInfoEl.textContent = "Furniture: (selection lost)";
       return;
@@ -841,6 +851,14 @@ export function initFloorPlanViewer() {
   set3DFurnitureMovedCallback(function () {
     /* positions already written to data.furniture items */
   });
+
+  set3DFurnitureSelectCallback(function (itemId) {
+    furnitureSelection.setSingle(itemId);
+    syncReplaceSelect();
+    updateFurnitureSelectionUi();
+  });
+
+  set3DFurnitureActionCallback(handleFloatingToolbarAction);
 
   function show2D() {
     if (activeMode === "2D") return;

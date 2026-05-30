@@ -285,6 +285,11 @@ export function createPlan3DInteraction(opts) {
     getSelected: function () {
       return selected;
     },
+    select: function (grp) {
+      if (!grp) return;
+      selectGroup(grp);
+      if (opts.onFurnitureSelect) opts.onFurnitureSelect(grp);
+    },
     deselect: deselect,
     updateHelper: function () {
       if (selected) boxHelper.update();
