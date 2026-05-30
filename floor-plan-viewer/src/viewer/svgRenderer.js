@@ -15,6 +15,7 @@ import {
   renderWallVertexHandles,
 } from "./geometryOverlays.js";
 import { getSofaPalette } from "../lib/sofaColors.js";
+import { ensurePhotoFloorPatterns, photoPatternForRoom } from "./floorPhotoTextures.js";
 
 const NS = "http://www.w3.org/2000/svg";
 
@@ -42,109 +43,11 @@ function createDefs(svg) {
     defs = svgEl("defs");
     svg.appendChild(defs);
   }
-
-  var wood = setAttrs(svgEl("pattern"), {
-    id: "wood-floor",
-    patternUnits: "userSpaceOnUse",
-    width: 60,
-    height: 18,
-  });
-  wood.appendChild(setAttrs(svgEl("rect"), { width: 60, height: 18, fill: "#f0e6d8" }));
-  for (var i = 1; i < 6; i++) {
-    wood.appendChild(
-      setAttrs(svgEl("line"), {
-        x1: i * 10,
-        y1: 0,
-        x2: i * 10,
-        y2: 18,
-        stroke: "#e0d0c0",
-        "stroke-width": 0.8,
-      })
-    );
-  }
-  wood.appendChild(setAttrs(svgEl("line"), { x1: 0, y1: 0, x2: 60, y2: 0, stroke: "#e0d0c0", "stroke-width": 0.8 }));
-  wood.appendChild(setAttrs(svgEl("line"), { x1: 0, y1: 18, x2: 60, y2: 18, stroke: "#e0d0c0", "stroke-width": 0.8 }));
-  for (var g = 0; g < 4; g++) {
-    wood.appendChild(
-      setAttrs(svgEl("path"), {
-        d: "M " + (5 + g * 15) + " 2 Q " + (8 + g * 15) + " 9 " + (5 + g * 15) + " 16",
-        stroke: "#e8d8c8",
-        "stroke-width": 0.5,
-        fill: "none",
-      })
-    );
-  }
-  defs.appendChild(wood);
-
-  var tile = setAttrs(svgEl("pattern"), {
-    id: "tile-floor",
-    patternUnits: "userSpaceOnUse",
-    width: 24,
-    height: 24,
-  });
-  tile.appendChild(setAttrs(svgEl("rect"), { width: 24, height: 24, fill: "#f5f8fa" }));
-  tile.appendChild(setAttrs(svgEl("path"), { d: "M0 0 L0 24 M0 0 L24 0", stroke: "#c8d8e4", "stroke-width": 1 }));
-  tile.appendChild(setAttrs(svgEl("rect"), { x: 1, y: 1, width: 22, height: 22, fill: "none", stroke: "#ffffff", "stroke-width": 0.5, opacity: 0.5 }));
-  defs.appendChild(tile);
-
-  var kitchen = setAttrs(svgEl("pattern"), {
-    id: "kitchen-floor",
-    patternUnits: "userSpaceOnUse",
-    width: 32,
-    height: 32,
-  });
-  kitchen.appendChild(setAttrs(svgEl("rect"), { width: 32, height: 32, fill: "#fef8e0" }));
-  kitchen.appendChild(setAttrs(svgEl("path"), { d: "M0 0 L0 32 M0 0 L32 0", stroke: "#f0e0b0", "stroke-width": 1 }));
-  kitchen.appendChild(setAttrs(svgEl("rect"), { x: 1, y: 1, width: 30, height: 30, fill: "none", stroke: "#ffffff", "stroke-width": 0.5, opacity: 0.4 }));
-  defs.appendChild(kitchen);
-
-  var stone = setAttrs(svgEl("pattern"), {
-    id: "stone-floor",
-    patternUnits: "userSpaceOnUse",
-    width: 40,
-    height: 20,
-  });
-  stone.appendChild(setAttrs(svgEl("rect"), { width: 40, height: 20, fill: "#e8e8e8" }));
-  [
-    { x: 1, y: 1, width: 17, height: 8 },
-    { x: 21, y: 1, width: 18, height: 8 },
-    { x: 1, y: 11, width: 18, height: 8 },
-    { x: 21, y: 11, width: 17, height: 8 },
-  ].forEach(function (r) {
-    stone.appendChild(
-      setAttrs(svgEl("rect"), {
-        x: r.x,
-        y: r.y,
-        width: r.width,
-        height: r.height,
-        fill: "#f2f2f2",
-        stroke: "#d0d0d0",
-        "stroke-width": 0.8,
-      })
-    );
-  });
-  defs.appendChild(stone);
-
-  var carpet = setAttrs(svgEl("pattern"), {
-    id: "carpet",
-    patternUnits: "userSpaceOnUse",
-    width: 12,
-    height: 12,
-  });
-  carpet.appendChild(setAttrs(svgEl("rect"), { width: 12, height: 12, fill: "#f5f0e8" }));
-  carpet.appendChild(setAttrs(svgEl("circle"), { cx: 3, cy: 3, r: 0.8, fill: "#e0d8cc" }));
-  carpet.appendChild(setAttrs(svgEl("circle"), { cx: 9, cy: 9, r: 0.8, fill: "#e0d8cc" }));
-  defs.appendChild(carpet);
+  ensurePhotoFloorPatterns(defs);
 }
 
 function patternForRoom(room) {
-  var flooring = String(room.flooring || "").toLowerCase();
-  var name = String(room.type || room.name || "").toLowerCase();
-  if (flooring === "wood" || name.indexOf("bed") >= 0 || name.indexOf("living") >= 0 || name.indexOf("dining") >= 0 || name.indexOf("hall") >= 0) return "url(#wood-floor)";
-  if (flooring === "tile" || name.indexOf("bath") >= 0) return "url(#tile-floor)";
-  if (name.indexOf("kitchen") >= 0) return "url(#kitchen-floor)";
-  if (flooring === "stone" || name.indexOf("balcon") >= 0 || name.indexOf("patio") >= 0 || name.indexOf("outdoor") >= 0 || name.indexOf("terrace") >= 0) return "url(#stone-floor)";
-  return "#fafafa";
+  return photoPatternForRoom(room);
 }
 
 function baseColorForRoom(room) {
@@ -280,7 +183,7 @@ function renderRugs(svg, rooms, size) {
         y: (minY + pad) * size.height,
         width: rw,
         height: rh,
-        fill: "url(#carpet)",
+        fill: "url(#photo-carpet)",
         stroke: "#e0d8cc",
         "stroke-width": 1,
         rx: 6,
@@ -750,7 +653,7 @@ function renderPlant(g, w, h) {
 }
 
 function renderRugItem(g, w, h) {
-  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h, fill: "url(#carpet)", stroke: "#e0d8cc", rx: 6 }));
+  g.appendChild(setAttrs(svgEl("rect"), { x: -w / 2, y: -h / 2, width: w, height: h, fill: "url(#photo-carpet)", stroke: "#e0d8cc", rx: 6 }));
 }
 
 function renderLabels(svg, rooms, size, calibrationState) {

@@ -728,12 +728,12 @@ body.view3d-move-mode.view3d-dragging #viewport3d canvas {
 #overlay .plan-bg {
   fill: none;
 }
-#overlay .plan-room-bg,
-#overlay .plan-room-fill {
-  opacity: 0.45;
+#overlay .plan-room-bg {
+  opacity: 0.35;
 }
 #overlay .plan-room-fill {
-  stroke: rgba(30, 27, 24, 0.18);
+  opacity: 0.94;
+  stroke: rgba(30, 27, 24, 0.14);
   stroke-width: 1;
   transition: stroke 0.18s ease, stroke-width 0.18s ease, opacity 0.18s ease;
 }
