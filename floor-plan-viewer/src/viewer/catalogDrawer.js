@@ -39,7 +39,9 @@ function saveFavorites(favs) {
 }
 
 function catalogImageUrl(row) {
-  return row && row.image_url ? String(row.image_url).trim() : "";
+  if (!row) return "";
+  var url = row.image_url || row.image_2d_url || row.plan2d_photo_url;
+  return url ? String(url).trim() : "";
 }
 
 function formatDims(row) {

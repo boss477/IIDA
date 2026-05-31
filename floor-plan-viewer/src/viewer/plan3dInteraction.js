@@ -26,17 +26,18 @@ var _dragPt = new THREE.Vector3();
  * @param {() => void} [opts.onFurnitureHoverEnd]
  * @param {(group: THREE.Group) => void} [opts.onFurnitureSelect]
  * @param {() => void} [opts.onFurnitureDeselect]
- * @param {() => THREE.Mesh[]} [opts.getWallMeshes]
- * @param {(mesh: THREE.Mesh) => void} [opts.onWallSelect]
- * @param {() => void} [opts.onWallDeselect]
  * @param {() => boolean} [opts.isSidePanelOpen]
  * @param {() => boolean} [opts.isSideRoomPickActive]
  * @param {(item: object) => void} [opts.onFurnitureMoved]
+ * @param {() => THREE.Mesh[]} [opts.getWallSegmentMeshes]
+ * @param {(segmentKey: string) => void} [opts.onWallPaint]
+ * @param {(room: object) => void} [opts.onRoomPaint]
  */
 export function createPlan3DInteraction(opts) {
   var raycaster = new THREE.Raycaster();
   var mouse2 = new THREE.Vector2();
   var moveMode = false;
+  var paintMode = false;
   var sidePickMode = false;
   var isDragging = false;
   var dragTarget = null;
@@ -104,18 +105,19 @@ export function createPlan3DInteraction(opts) {
     return opts.findRoomAtWorld(pt.x, pt.z);
   }
 
-  function pickWall(e) {
+  function pickWallSegment(e) {
+    if (!opts.getWallSegmentMeshes) return null;
+    var walls = opts.getWallSegmentMeshes();
+    if (!walls.length) return null;
     var nd = getNDC(e);
     mouse2.set(nd.x, nd.y);
     raycaster.setFromCamera(mouse2, opts.camera);
-    var walls = opts.getWallMeshes ? opts.getWallMeshes() : [];
-    if (!walls.length) return null;
     var hits = raycaster.intersectObjects(walls, false);
     return hits.length ? hits[0].object : null;
   }
 
   function isRoomPickActive() {
-    if (moveMode) return false;
+    if (moveMode || paintMode) return false;
     if (opts.isSideRoomPickActive) return opts.isSideRoomPickActive();
     if (sidePickMode) return true;
     return !!(opts.isSidePanelOpen && opts.isSidePanelOpen());
@@ -181,6 +183,17 @@ export function createPlan3DInteraction(opts) {
       return;
     }
 
+    if (paintMode) {
+      var wallHover = pickWallSegment(e);
+      if (wallHover) {
+        dom.style.cursor = "pointer";
+        return;
+      }
+      var roomPaintHover = pickRoom(e);
+      dom.style.cursor = roomPaintHover ? "pointer" : "crosshair";
+      return;
+    }
+
     if (isRoomPickActive()) {
       var roomSide = pickRoom(e);
       if (roomSide) {
@@ -199,18 +212,13 @@ export function createPlan3DInteraction(opts) {
       opts.onFurnitureHover(grpHover, e);
     } else {
       if (opts.onFurnitureHoverEnd) opts.onFurnitureHoverEnd();
-      var wallHover = pickWall(e);
-      if (wallHover) {
+      var roomGen = pickRoom(e);
+      if (roomGen && opts.onRoomHoverGeneral) {
         dom.style.cursor = "pointer";
+        opts.onRoomHoverGeneral(roomGen, e);
       } else {
-        var roomGen = pickRoom(e);
-        if (roomGen && opts.onRoomHoverGeneral) {
-          dom.style.cursor = "pointer";
-          opts.onRoomHoverGeneral(roomGen, e);
-        } else {
-          dom.style.cursor = moveMode ? "grab" : "";
-          if (opts.onRoomHoverGeneralEnd) opts.onRoomHoverGeneralEnd();
-        }
+        dom.style.cursor = moveMode ? "grab" : "";
+        if (opts.onRoomHoverGeneralEnd) opts.onRoomHoverGeneralEnd();
       }
     }
   }
@@ -224,6 +232,19 @@ export function createPlan3DInteraction(opts) {
 
   function onClick(e) {
     if (moveMode) return;
+    if (paintMode) {
+      var wallMesh = pickWallSegment(e);
+      if (wallMesh && opts.onWallPaint) {
+        opts.onWallPaint(wallMesh.userData.segmentKey);
+        return;
+      }
+      var roomPaint = pickRoom(e);
+      if (roomPaint && opts.onRoomPaint) {
+        opts.onRoomPaint(roomPaint);
+        return;
+      }
+      return;
+    }
     if (isRoomPickActive()) {
       var room = pickRoom(e);
       if (room && opts.onRoomSelected) {
@@ -234,19 +255,9 @@ export function createPlan3DInteraction(opts) {
     }
     var grp = pickFurniture(e);
     if (grp) {
-      if (opts.onWallDeselect) opts.onWallDeselect();
       selectGroup(grp);
       if (opts.onFurnitureSelect) opts.onFurnitureSelect(grp);
-      return;
-    }
-    var wall = pickWall(e);
-    if (wall && opts.onWallSelect) {
-      deselect();
-      opts.onWallSelect(wall);
-      return;
-    }
-    if (opts.onWallDeselect) opts.onWallDeselect();
-    deselect();
+    } else deselect();
   }
 
   dom.addEventListener("mousedown", onPointerDown);
@@ -271,6 +282,19 @@ export function createPlan3DInteraction(opts) {
       opts.controls.enabled = true;
       document.body.classList.remove("view3d-move-mode", "view3d-dragging");
     },
+    enterPaintMode: function () {
+      paintMode = true;
+      deselect();
+      document.body.classList.add("view3d-paint-mode");
+    },
+    exitPaintMode: function () {
+      paintMode = false;
+      document.body.classList.remove("view3d-paint-mode");
+      dom.style.cursor = "";
+    },
+    isPaintMode: function () {
+      return paintMode;
+    },
     isMoveMode: function () {
       return moveMode;
     },
@@ -284,11 +308,6 @@ export function createPlan3DInteraction(opts) {
     },
     getSelected: function () {
       return selected;
-    },
-    select: function (grp) {
-      if (!grp) return;
-      selectGroup(grp);
-      if (opts.onFurnitureSelect) opts.onFurnitureSelect(grp);
     },
     deselect: deselect,
     updateHelper: function () {
@@ -307,7 +326,8 @@ export function createPlan3DInteraction(opts) {
         "view3d-move-mode",
         "view3d-dragging",
         "view3d-has-selection",
-        "view3d-side-pick-mode"
+        "view3d-side-pick-mode",
+        "view3d-paint-mode"
       );
     },
   };

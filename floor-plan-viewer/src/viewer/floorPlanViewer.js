@@ -17,6 +17,7 @@ import {
   catalogById,
   createFurnitureNearItem,
   findSofaCatalogRow,
+  isSeatingCatalogRow,
   formatCatalogDimensionsLabel,
   isSofaCatalogRow,
   parseSofaParams,
@@ -26,7 +27,8 @@ import {
   sofaColorLabel,
   SOFA_COLOR_OPTIONS,
 } from "../lib/sofaColors.js";
-import { fetchShearlingCatalog, uploadPlanRaster } from "../services/supabase.js";
+import { fetchPlanCatalog, fetchShearlingCatalog, uploadPlanRaster } from "../services/supabase.js";
+import { DEFAULT_PLAN_CATALOG } from "../lib/planFurniturePresets.js";
 import { bindPlanFileInput } from "../upload/uploadDropzone.js";
 import { renderPlan } from "./svgRenderer.js";
 import { updateRoomHighlight } from "./roomOverlay.js";
@@ -40,25 +42,13 @@ import {
   init3D,
   dispose3D,
   resize3D,
-  rebuild3DScene,
   set3DViewMode,
   set3DFurnitureMovedCallback,
-  set3DFurnitureSelectCallback,
-  set3DFurnitureActionCallback,
   toggle3DSidePanel,
-  set3DMeasureUnits,
-  set3DWallColor,
-  sync3DWallSwatches,
   toggle3DMoveMode,
 } from "./plan3dViewer.js";
-import { WALL_COLOR_OPTIONS } from "./planTools.js";
-import { getWallPresetHex } from "./plan3dMaterials.js";
-import {
-  createFurnitureSelection,
-  duplicateFurnitureItems,
-  goesWithGroup,
-} from "./furnitureSelection.js";
-import { createFurnitureToolbar, selectionScreenRect } from "./furnitureToolbar.js";
+import { preloadGlbTopDownIcons } from "./glbTopDownBake.js";
+import { autoStagePlan, enrichStagedFromCatalog } from "./roomAutoStage.js";
 
 var PLAN_SIZE = { width: 1000, height: 1000 };
 
@@ -90,10 +80,27 @@ export function initFloorPlanViewer() {
   var drag = null;
   var furnitureDrag = null;
   var activeRoomId = null;
-  var furnitureSelection = createFurnitureSelection();
-  var floatingToolbar = null;
+  var selectedFurnitureId = null;
   var lastOpenedFile = null;
   var shearlingCatalog = null;
+  var planCatalog = DEFAULT_PLAN_CATALOG.slice();
+
+  function fullCatalog() {
+    return (planCatalog || []).concat(shearlingCatalog || []);
+  }
+
+  function lookupCatalogRow(id) {
+    return catalogById(planCatalog, id) || catalogById(shearlingCatalog, id);
+  }
+
+  function syncCatalogDrawerRows() {
+    if (!catalogDrawer) return;
+    var rows = (planCatalog || []).slice();
+    (shearlingCatalog || []).forEach(function (row) {
+      rows.push(row);
+    });
+    catalogDrawer.setCatalogRows(rows);
+  }
   var lastFurniturePointer = { clientX: 0, clientY: 0 };
   var vertexDrag = null;
   var geo = null;
@@ -134,15 +141,15 @@ export function initFloorPlanViewer() {
   var addSofaNearBtn = document.createElement("button");
   addSofaNearBtn.type = "button";
   addSofaNearBtn.className = "btn";
-  addSofaNearBtn.textContent = "+ Sofa near";
+  addSofaNearBtn.textContent = "+ near";
   addSofaNearBtn.disabled = true;
   addSofaNearBtn.title =
-    "Place a new sofa beside the selection (SKU from Replace with, or first sofa in catalog)";
+    "Place the SKU selected in Replace with beside the selection (sofa or chair)";
 
   var hint = document.createElement("span");
   hint.className = "toolbar-hint";
   hint.textContent =
-    "Click · Shift/Ctrl+click multi · toolbar · drag · [ ] rotate · Esc deselect";
+    "Select · Replace SKU · Color · + near · drag · [ ] rotate · arrows · Esc deselect";
 
   var scaleEl = document.createElement("span");
   scaleEl.className = "calibration-scale";
@@ -151,7 +158,7 @@ export function initFloorPlanViewer() {
   var furnitureInfoEl = document.createElement("span");
   furnitureInfoEl.className = "furniture-info";
   furnitureInfoEl.setAttribute("aria-live", "polite");
-  furnitureInfoEl.textContent = "Furniture: click a piece, then pick a Shearling SKU";
+  furnitureInfoEl.textContent = "Furniture: click a piece, then choose from catalog";
 
   function getCatalogContext() {
     return {
@@ -164,7 +171,7 @@ export function initFloorPlanViewer() {
   }
 
   function applyCatalogToAllFurniture() {
-    var catalog = data.furniture_catalog || [];
+    var catalog = fullCatalog();
     if (!catalog.length) return;
     (data.furniture || []).forEach(function (f) {
       if (!f.catalogId) return;
@@ -173,145 +180,33 @@ export function initFloorPlanViewer() {
     });
   }
 
-  function getPrimaryFurnitureId() {
-    return furnitureSelection.getPrimary();
-  }
-
-  function getSelectedFurnitureIds() {
-    return furnitureSelection.getIds();
-  }
-
-  function clearFurnitureSelection() {
-    furnitureSelection.clear();
-    if (floatingToolbar) floatingToolbar.hide();
-  }
-
-  function syncFloatingToolbar() {
-    if (!floatingToolbar || activeMode !== "2D") return;
-    var ids = getSelectedFurnitureIds();
-    if (!ids.length) {
-      floatingToolbar.hide();
-      return;
-    }
-    requestAnimationFrame(function () {
-      var rect = selectionScreenRect(overlay, ids);
-      if (!rect) {
-        floatingToolbar.hide();
-        return;
-      }
-      var hint = ids.length === 1 ? "Select another item, then Goes with to link" : "";
-      floatingToolbar.show(rect, {
-        goesWithDisabled: ids.length < 2,
-        hint: hint,
-      });
-    });
-  }
-
-  function rotateSelectedFurniture(deltaDeg) {
-    var ids = getSelectedFurnitureIds();
-    if (!ids.length) return;
-    var idSet = {};
-    ids.forEach(function (id) {
-      idSet[id] = true;
-    });
-    (data.furniture || []).forEach(function (item) {
-      if (idSet[item.id]) item.rotationDeg = (item.rotationDeg || 0) + deltaDeg;
-    });
-    render();
-  }
-
-  function removeSelectedFurniture() {
-    var ids = getSelectedFurnitureIds();
-    if (!ids.length) return;
-    var idSet = {};
-    ids.forEach(function (id) {
-      idSet[id] = true;
-    });
-    data.furniture = (data.furniture || []).filter(function (f) {
-      return !idSet[f.id];
-    });
-    clearFurnitureSelection();
-    syncReplaceSelect();
-    updateFurnitureSelectionUi();
-    render();
-  }
-
-  function copySelectedFurniture() {
-    var ids = getSelectedFurnitureIds();
-    if (!ids.length) return;
-    var copies = duplicateFurnitureItems(data.furniture, ids);
-    if (!copies.length) return;
-    if (!data.furniture) data.furniture = [];
-    copies.forEach(function (c) {
-      data.furniture.push(c);
-    });
-    furnitureSelection.clear();
-    copies.forEach(function (c) {
-      furnitureSelection.add(c.id);
-    });
-    syncReplaceSelect();
-    updateFurnitureSelectionUi();
-    render();
-  }
-
-  function linkSelectedAsGoesWith() {
-    var ids = getSelectedFurnitureIds();
-    if (ids.length < 2) return;
-    goesWithGroup(data.furniture, ids);
-    syncFloatingToolbar();
-    render();
-  }
-
-  function handleFloatingToolbarAction(actionId) {
-    if (actionId === "rotate") {
-      rotateSelectedFurniture(5);
-    } else if (actionId === "replace") {
-      replaceSel.focus();
-      replaceSel.click();
-    } else if (actionId === "goesWith") {
-      linkSelectedAsGoesWith();
-    } else if (actionId === "copy") {
-      copySelectedFurniture();
-    } else if (actionId === "remove") {
-      removeSelectedFurniture();
-    }
-    if (activeMode === "3D") rebuild3DScene(getPrimaryFurnitureId());
-  }
-
   function updateFurnitureSelectionUi(pointerEvent) {
     if (pointerEvent) {
       lastFurniturePointer.clientX = pointerEvent.clientX;
       lastFurniturePointer.clientY = pointerEvent.clientY;
     }
-    var ids = getSelectedFurnitureIds();
-    if (!ids.length) {
-      furnitureInfoEl.textContent = "Furniture: click a piece, then pick a Shearling SKU";
-      if (floatingToolbar) floatingToolbar.hide();
+    if (!selectedFurnitureId) {
+      furnitureInfoEl.textContent = "Furniture: click a piece, then choose from catalog";
       return;
     }
-    var primaryId = getPrimaryFurnitureId();
-    var item = primaryId
-      ? data.furniture.find(function (f) {
-          return f.id === primaryId;
-        })
-      : null;
+    var item = data.furniture.find(function (f) {
+      return f.id === selectedFurnitureId;
+    });
     if (!item) {
       furnitureInfoEl.textContent = "Furniture: (selection lost)";
       return;
     }
-    var countPrefix = ids.length > 1 ? ids.length + " selected · " : "";
-    var row = catalogById(data.furniture_catalog || [], item.catalogId);
+    var row = lookupCatalogRow(item.catalogId);
     if (row) {
       var label = formatCatalogDimensionsLabel(row, item);
-      furnitureInfoEl.textContent = countPrefix + label;
-      showFurnitureTooltip(tip, lastFurniturePointer, countPrefix + label);
+      furnitureInfoEl.textContent = label;
+      showFurnitureTooltip(tip, lastFurniturePointer, label);
     } else if (item.catalogId) {
       furnitureInfoEl.textContent =
-        countPrefix + item.catalogId + " — use Replace with to pick a Shearling SKU";
+        item.catalogId + " — use Replace with to pick a catalog item";
     } else {
-      furnitureInfoEl.textContent = countPrefix + "Selected — use Replace with for DB size + icon";
+      furnitureInfoEl.textContent = "Selected — use Replace with for DB size + icon";
     }
-    syncFloatingToolbar();
   }
 
   function refreshCalibration() {
@@ -335,7 +230,7 @@ export function initFloorPlanViewer() {
     if (!item) return false;
     var t = String(item.type || item.shape || "").toLowerCase();
     if (t.indexOf("sofa") >= 0 || t.indexOf("lounge") >= 0 || t.indexOf("sectional") >= 0) return true;
-    var row = catalogById(data.furniture_catalog || [], item.catalogId);
+    var row = lookupCatalogRow(item.catalogId);
     return row ? isSofaCatalogRow(row) : false;
   }
 
@@ -352,19 +247,18 @@ export function initFloorPlanViewer() {
 
   function syncSofaColorSelect() {
     sofaColorSel.innerHTML = "";
-    var primaryId = getPrimaryFurnitureId();
-    if (!primaryId) {
+    if (!selectedFurnitureId) {
       sofaColorSel.disabled = true;
       return;
     }
     var item = data.furniture.find(function (f) {
-      return f.id === primaryId;
+      return f.id === selectedFurnitureId;
     });
     if (!item || !isItemSofa(item)) {
       sofaColorSel.disabled = true;
       return;
     }
-    var catalog = data.furniture_catalog || [];
+    var catalog = fullCatalog();
     var row = catalogById(catalog, item.catalogId);
     var available = getAvailableSofaColors(row, catalog);
     var availableSet = {};
@@ -404,20 +298,52 @@ export function initFloorPlanViewer() {
     sofaColorSel.disabled = false;
   }
 
+  function appendReplaceOptions(container, rows) {
+    rows.forEach(function (c) {
+      var o = document.createElement("option");
+      o.value = c.id || c.product_code;
+      o.textContent =
+        c.name ||
+        (c.product_name && c.product_code
+          ? c.product_name + " · " + c.product_code
+          : c.product_name || c.id);
+      container.appendChild(o);
+    });
+  }
+
   function syncReplaceSelect() {
     replaceSel.innerHTML = "";
-    (data.furniture_catalog || []).forEach(function (c) {
-      var o = document.createElement("option");
-      o.value = c.id;
-      o.textContent = c.name;
-      replaceSel.appendChild(o);
-    });
-    var primaryId = getPrimaryFurnitureId();
-    if (primaryId) {
+    var shearling = shearlingCatalog || [];
+    var presets = planCatalog || [];
+
+    if (shearling.length) {
+      var grpSku = document.createElement("optgroup");
+      grpSku.label = "Shearling SKUs (" + shearling.length + ")";
+      appendReplaceOptions(grpSku, shearling);
+      replaceSel.appendChild(grpSku);
+    }
+
+    if (presets.length) {
+      var grpSets = document.createElement("optgroup");
+      grpSets.label = "Room sets";
+      appendReplaceOptions(grpSets, presets);
+      replaceSel.appendChild(grpSets);
+    }
+
+    if (!shearling.length && !presets.length) {
+      var empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = hasSb ? "Loading catalog…" : "No catalog loaded";
+      replaceSel.appendChild(empty);
+    }
+
+    if (selectedFurnitureId) {
       var item = data.furniture.find(function (f) {
-        return f.id === primaryId;
+        return f.id === selectedFurnitureId;
       });
-      if (item) replaceSel.value = item.catalogId;
+      if (item && item.catalogId && lookupCatalogRow(item.catalogId)) {
+        replaceSel.value = item.catalogId;
+      }
       replaceSel.disabled = false;
       addSofaNearBtn.disabled = false;
     } else {
@@ -429,10 +355,14 @@ export function initFloorPlanViewer() {
 
   function applySofaColorToItem(item, colorId) {
     if (!item || !isItemSofa(item)) return;
-    var row = catalogById(data.furniture_catalog || [], item.catalogId);
+    var row = lookupCatalogRow(item.catalogId);
     if (!item.sofaParams) {
       item.sofaParams = row
-        ? parseSofaParams(row.keywords, row.product_name)
+        ? (function () {
+            var p = parseSofaParams(row.keywords, row.product_name);
+            if (row.sofa_seats != null) p.seats = row.sofa_seats;
+            return p;
+          })()
         : { seats: 2, hasLounge: false, hasArm: true };
     }
     if (!colorId) {
@@ -451,23 +381,25 @@ export function initFloorPlanViewer() {
   }
 
   function addSofaNearSelected() {
-    var primaryId = getPrimaryFurnitureId();
-    if (!primaryId) return;
+    if (!selectedFurnitureId) return;
     var anchor = data.furniture.find(function (f) {
-      return f.id === primaryId;
+      return f.id === selectedFurnitureId;
     });
     if (!anchor) return;
-    var catalog = data.furniture_catalog || [];
-    var row = findSofaCatalogRow(catalog, replaceSel.value);
+    var row = lookupCatalogRow(replaceSel.value);
     if (!row) {
-      alert("No sofa SKU found. Load the Shearling catalog or pick a sofa in Replace with.");
+      alert("Pick a catalog SKU in Replace with first.");
+      return;
+    }
+    if (!isSeatingCatalogRow(row)) {
+      alert("+ near works for sofas and chairs. Pick a seating SKU in Replace with.");
       return;
     }
     var newItem = createFurnitureNearItem(anchor, row, getCatalogContext());
     if (!newItem) return;
     if (!data.furniture) data.furniture = [];
     data.furniture.push(newItem);
-    furnitureSelection.setSingle(newItem.id);
+    selectedFurnitureId = newItem.id;
     syncReplaceSelect();
     updateFurnitureSelectionUi();
     render();
@@ -565,16 +497,14 @@ export function initFloorPlanViewer() {
       mmPerPixel: calibrationState ? calibrationState.mmPerPixel : null,
       planWidthPx: plan.naturalWidth || size.width,
       planHeightPx: plan.naturalHeight || size.height,
-      furnitureCatalog: data.furniture_catalog || [],
+      furnitureCatalog: fullCatalog(),
     };
-    geoOpts.primaryFurnitureId = getPrimaryFurnitureId();
-    renderPlan(overlay, data, activeRoomId, getSelectedFurnitureIds(), size, geoOpts);
-    syncFloatingToolbar();
+    renderPlan(overlay, data, activeRoomId, selectedFurnitureId, size, geoOpts);
   }
 
   function getPlacedItemsForDrawer() {
     return (data.furniture || []).map(function (f) {
-      var row = catalogById(data.furniture_catalog || [], f.catalogId);
+      var row = lookupCatalogRow(f.catalogId);
       var title = row ? row.product_code || row.id || f.catalogId : f.catalogId || f.id;
       var sub = row ? (row.product_name || row.name || "") : "";
       return {
@@ -582,7 +512,7 @@ export function initFloorPlanViewer() {
         label: title || "Item",
         sub: sub,
         onSelect: function () {
-          furnitureSelection.setSingle(f.id);
+          selectedFurnitureId = f.id;
           syncReplaceSelect();
           updateFurnitureSelectionUi();
           render();
@@ -591,7 +521,7 @@ export function initFloorPlanViewer() {
           data.furniture = (data.furniture || []).filter(function (x) {
             return x.id !== f.id;
           });
-          if (furnitureSelection.has(f.id)) furnitureSelection.remove(f.id);
+          if (selectedFurnitureId === f.id) selectedFurnitureId = null;
           syncReplaceSelect();
           updateFurnitureSelectionUi();
           render();
@@ -602,11 +532,10 @@ export function initFloorPlanViewer() {
 
   function addCatalogRowToPlan(row) {
     if (!row) return;
-    var catalogRow = catalogById(data.furniture_catalog || [], row.id || row.product_code) || row;
-    var primaryId = getPrimaryFurnitureId();
-    var anchor = primaryId
+    var catalogRow = lookupCatalogRow(row.id || row.product_code) || row;
+    var anchor = selectedFurnitureId
       ? data.furniture.find(function (f) {
-          return f.id === primaryId;
+          return f.id === selectedFurnitureId;
         })
       : null;
 
@@ -628,7 +557,7 @@ export function initFloorPlanViewer() {
     if (!newItem) return;
     if (!data.furniture) data.furniture = [];
     data.furniture.push(newItem);
-    furnitureSelection.setSingle(newItem.id);
+    selectedFurnitureId = newItem.id;
     syncReplaceSelect();
     updateFurnitureSelectionUi();
     render();
@@ -655,9 +584,20 @@ export function initFloorPlanViewer() {
       walls: data.walls || [],
       doors: data.doors || [],
       windows: data.windows || [],
-      furniture_catalog: data.furniture_catalog || [],
+      furniture_catalog: planCatalog.slice(),
       furniture: data.furniture || [],
     };
+  }
+
+  function runAutoStage(replaceAuto) {
+    var catalog = fullCatalog();
+    var count = autoStagePlan(data, catalog, { replaceAuto: replaceAuto !== false });
+    enrichStagedFromCatalog(data, catalog);
+    normalizeFurnitureIds();
+    applyCatalogToAllFurniture();
+    syncReplaceSelect();
+    render();
+    setLlmStatus("Auto-staged " + count + " furniture items (rich SVG + GLB sofa demo)");
   }
 
   function applyAnalysisFromObject(nextData) {
@@ -682,12 +622,7 @@ export function initFloorPlanViewer() {
     data.rooms = Array.isArray(data.rooms) ? data.rooms : [];
     data.walls = Array.isArray(data.walls) ? data.walls : [];
     data.furniture = Array.isArray(data.furniture) ? data.furniture : [];
-    data.furniture_catalog =
-      shearlingCatalog && shearlingCatalog.length
-        ? shearlingCatalog
-        : Array.isArray(data.furniture_catalog)
-          ? data.furniture_catalog
-          : [];
+    data.furniture_catalog = planCatalog.slice();
     data.doors = Array.isArray(data.doors) ? data.doors : [];
     data.windows = Array.isArray(data.windows) ? data.windows : [];
     normalizeFurnitureIds();
@@ -697,13 +632,13 @@ export function initFloorPlanViewer() {
       delete f.depth;
       delete f.scale;
     });
-    clearFurnitureSelection();
+    selectedFurnitureId = null;
     activeRoomId = null;
     if (geo && geo.resetForNewData) geo.resetForNewData();
     syncReplaceSelect();
     refreshCalibration();
     applyCatalogToAllFurniture();
-    if (catalogDrawer) catalogDrawer.setCatalogRows(data.furniture_catalog || []);
+    syncCatalogDrawerRows();
     render();
   }
 
@@ -720,10 +655,17 @@ export function initFloorPlanViewer() {
           setLlmStatus("LLM: analysis loaded");
         };
         if (hasSb && (!shearlingCatalog || !shearlingCatalog.length)) {
-          return fetchShearlingCatalog()
-            .then(function (catalog) {
-              shearlingCatalog = catalog;
-              data.furniture_catalog = catalog;
+          return Promise.all([
+            fetchPlanCatalog(),
+            fetchShearlingCatalog().catch(function () {
+              return [];
+            }),
+          ])
+            .then(function (results) {
+              planCatalog = results[0];
+              shearlingCatalog = results[1];
+              data.furniture_catalog = planCatalog.slice();
+              syncCatalogDrawerRows();
               apply();
             })
             .catch(function (err) {
@@ -754,7 +696,7 @@ export function initFloorPlanViewer() {
   }
 
   function loadFixture() {
-    fetch("/fixtures/sample-plan.json")
+    return fetch("/fixtures/sample-plan.json")
       .then(function (r) {
         return r.json();
       })
@@ -801,26 +743,6 @@ export function initFloorPlanViewer() {
   var btn3dTop = document.getElementById("btn3d-top");
   var btn3dSide = document.getElementById("btn3d-side");
   var btn3dMove = document.getElementById("btn3d-move");
-  var btn3dUnits = document.getElementById("btn3d-units");
-  var wallPalette = document.getElementById("view3d-wall-palette");
-
-  if (wallPalette) {
-    wallPalette.innerHTML = "";
-    WALL_COLOR_OPTIONS.forEach(function (opt) {
-      var btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "wall-swatch";
-      btn.setAttribute("data-preset", opt.value);
-      btn.style.background = getWallPresetHex(opt.value);
-      btn.title = opt.label;
-      btn.setAttribute("aria-label", opt.label);
-      btn.disabled = true;
-      btn.addEventListener("click", function () {
-        set3DWallColor(opt.value);
-      });
-      wallPalette.appendChild(btn);
-    });
-  }
 
   if (btn3dDollhouse) {
     btn3dDollhouse.addEventListener("click", function () {
@@ -842,23 +764,10 @@ export function initFloorPlanViewer() {
       toggle3DMoveMode();
     });
   }
-  if (btn3dUnits) {
-    btn3dUnits.addEventListener("change", function () {
-      set3DMeasureUnits(btn3dUnits.value);
-    });
-  }
 
   set3DFurnitureMovedCallback(function () {
     /* positions already written to data.furniture items */
   });
-
-  set3DFurnitureSelectCallback(function (itemId) {
-    furnitureSelection.setSingle(itemId);
-    syncReplaceSelect();
-    updateFurnitureSelectionUi();
-  });
-
-  set3DFurnitureActionCallback(handleFloatingToolbarAction);
 
   function show2D() {
     if (activeMode === "2D") return;
@@ -877,8 +786,7 @@ export function initFloorPlanViewer() {
   function show3D() {
     if (activeMode === "3D") return;
     activeMode = "3D";
-    clearFurnitureSelection();
-    if (floatingToolbar) floatingToolbar.hide();
+    selectedFurnitureId = null;
     syncReplaceSelect();
     updateFurnitureSelectionUi();
     hideTooltip(tip);
@@ -1064,7 +972,7 @@ export function initFloorPlanViewer() {
     requestRender: render,
     onToolModeChange: function (mode) {
       if (mode !== "view") {
-        clearFurnitureSelection();
+        selectedFurnitureId = null;
         furnitureDrag = null;
         syncReplaceSelect();
         updateFurnitureSelectionUi();
@@ -1098,14 +1006,22 @@ export function initFloorPlanViewer() {
 
   replaceLab.appendChild(colorLab);
   replaceLab.appendChild(addSofaNearBtn);
+
+  var autoStageBtn = document.createElement("button");
+  autoStageBtn.type = "button";
+  autoStageBtn.textContent = "Auto stage";
+  autoStageBtn.title = "Place rich SVG + demo GLB sofa in each room";
+  autoStageBtn.addEventListener("click", function () {
+    runAutoStage(true);
+  });
+  furnitureRow.appendChild(autoStageBtn);
   furnitureRow.appendChild(replaceLab);
   toolbarEl.appendChild(furnitureRow);
 
   sofaColorSel.addEventListener("change", function () {
-    var primaryId = getPrimaryFurnitureId();
-    if (!primaryId) return;
+    if (!selectedFurnitureId) return;
     var item = data.furniture.find(function (f) {
-      return f.id === primaryId;
+      return f.id === selectedFurnitureId;
     });
     if (!item) return;
     applySofaColorToItem(item, sofaColorSel.value);
@@ -1121,18 +1037,13 @@ export function initFloorPlanViewer() {
   toolbarEl.appendChild(scaleEl);
   toolbarEl.appendChild(hint);
 
-  floatingToolbar = createFurnitureToolbar(planWrap, {
-    onAction: handleFloatingToolbarAction,
-  });
-
   replaceSel.addEventListener("change", function () {
-    var primaryId = getPrimaryFurnitureId();
-    if (!primaryId) return;
+    if (!selectedFurnitureId) return;
     var item = data.furniture.find(function (f) {
-      return f.id === primaryId;
+      return f.id === selectedFurnitureId;
     });
     if (!item) return;
-    var row = catalogById(data.furniture_catalog || [], replaceSel.value);
+    var row = lookupCatalogRow(replaceSel.value);
     if (row) {
       var prevColor = item.sofaColorOverride;
       applyCatalogSkuToItem(item, row, getCatalogContext());
@@ -1166,7 +1077,6 @@ export function initFloorPlanViewer() {
     "mousedown",
     function (e) {
       if (e.button !== 0) return;
-      if (e.target.closest(".furniture-floating-toolbar")) return;
       var n = clientToPlanNormalized(e.clientX, e.clientY);
 
       if (geo.isGeometryClickMode()) {
@@ -1203,26 +1113,12 @@ export function initFloorPlanViewer() {
           return f.id === id;
         });
         if (!item) return;
-        var multi = e.shiftKey || e.ctrlKey || e.metaKey;
-        if (multi) {
-          furnitureSelection.toggle(id);
-        } else {
-          furnitureSelection.setSingle(id);
-        }
+        selectedFurnitureId = id;
         activeRoomId = null;
         updateRoomHighlight(overlay, null);
         syncReplaceSelect();
         updateFurnitureSelectionUi(e);
         render();
-        var dragIds = furnitureSelection.has(id) ? getSelectedFurnitureIds() : [id];
-        var dragItems = dragIds.map(function (did) {
-          var df = data.furniture.find(function (f) {
-            return f.id === did;
-          });
-          return df
-            ? { id: did, ox: df.x, oy: df.y, lastValidX: df.x, lastValidY: df.y }
-            : null;
-        }).filter(Boolean);
         furnitureDrag = {
           id: id,
           nx: n.x,
@@ -1231,18 +1127,12 @@ export function initFloorPlanViewer() {
           oy: item.y,
           lastValidX: item.x,
           lastValidY: item.y,
-          multi: dragItems.length > 1,
-          items: dragItems,
         };
         return;
       }
 
       if (geo.getToolMode() === "view") {
         e.stopPropagation();
-        clearFurnitureSelection();
-        syncReplaceSelect();
-        updateFurnitureSelectionUi();
-        hideTooltip(tip);
         geo.handlePlanClick(n);
       }
     },
@@ -1254,7 +1144,7 @@ export function initFloorPlanViewer() {
     var n = clientToPlanNormalized(e.clientX, e.clientY);
     if (geo.handleMousemove(n)) return;
     if (geo.getToolMode() !== "view") return;
-    if (getSelectedFurnitureIds().length) return;
+    if (selectedFurnitureId) return;
     if (n.x < 0 || n.x > 1 || n.y < 0 || n.y > 1) {
       activeRoomId = null;
       updateRoomHighlight(overlay, null);
@@ -1287,7 +1177,6 @@ export function initFloorPlanViewer() {
     if (e.target.closest(".plan-wall-vertex-handle")) return;
     if (e.target.closest(".plan-vertex-handle")) return;
     if (e.target.closest("[data-furniture-id]")) return;
-    if (e.target.closest(".furniture-floating-toolbar")) return;
     drag = { x: e.clientX - tx, y: e.clientY - ty };
   });
   window.addEventListener("mousemove", function (e) {
@@ -1297,45 +1186,30 @@ export function initFloorPlanViewer() {
       return;
     }
     if (furnitureDrag) {
-      var n = clientToPlanNormalized(e.clientX, e.clientY);
-      var dx = n.x - furnitureDrag.nx;
-      var dy = n.y - furnitureDrag.ny;
-      if (furnitureDrag.multi && furnitureDrag.items && furnitureDrag.items.length) {
-        furnitureDrag.items.forEach(function (di) {
-          var it = data.furniture.find(function (f) {
-            return f.id === di.id;
-          });
-          if (!it) return;
-          it.x = di.ox + dx;
-          it.y = di.oy + dy;
-          if (
-            constrainFurnitureMove(it, data.rooms, di.lastValidX, di.lastValidY)
-          ) {
-            di.lastValidX = it.x;
-            di.lastValidY = it.y;
-          }
-        });
-      } else {
-        var item = data.furniture.find(function (f) {
-          return f.id === furnitureDrag.id;
-        });
-        if (item) {
-          item.x = furnitureDrag.ox + dx;
-          item.y = furnitureDrag.oy + dy;
-          if (
-            constrainFurnitureMove(
-              item,
-              data.rooms,
-              furnitureDrag.lastValidX,
-              furnitureDrag.lastValidY
-            )
-          ) {
-            furnitureDrag.lastValidX = item.x;
-            furnitureDrag.lastValidY = item.y;
-          }
+      var item = data.furniture.find(function (f) {
+        return f.id === furnitureDrag.id;
+      });
+      if (item) {
+        var n = clientToPlanNormalized(e.clientX, e.clientY);
+        var dx = n.x - furnitureDrag.nx;
+        var dy = n.y - furnitureDrag.ny;
+        var tryX = furnitureDrag.ox + dx;
+        var tryY = furnitureDrag.oy + dy;
+        item.x = tryX;
+        item.y = tryY;
+        if (
+          constrainFurnitureMove(
+            item,
+            data.rooms,
+            furnitureDrag.lastValidX,
+            furnitureDrag.lastValidY
+          )
+        ) {
+          furnitureDrag.lastValidX = item.x;
+          furnitureDrag.lastValidY = item.y;
         }
+        render();
       }
-      render();
       return;
     }
     if (!drag) return;
@@ -1362,7 +1236,7 @@ export function initFloorPlanViewer() {
         e.preventDefault();
         return;
       }
-      clearFurnitureSelection();
+      selectedFurnitureId = null;
       syncReplaceSelect();
       updateFurnitureSelectionUi();
       hideTooltip(tip);
@@ -1375,34 +1249,38 @@ export function initFloorPlanViewer() {
       return;
     }
     if (geo.blocksFurnitureInteraction()) return;
-    var selectedIds = getSelectedFurnitureIds();
-    if (!selectedIds.length) return;
-    var idSet = {};
-    selectedIds.forEach(function (sid) {
-      idSet[sid] = true;
+    if (!selectedFurnitureId) return;
+    var item = data.furniture.find(function (f) {
+      return f.id === selectedFurnitureId;
     });
+    if (!item) return;
     var step = e.shiftKey ? 0.022 : 0.009;
+    var prevX = item.x;
+    var prevY = item.y;
     var changed = false;
-    if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown") {
-      (data.furniture || []).forEach(function (item) {
-        if (!idSet[item.id]) return;
-        var prevX = item.x;
-        var prevY = item.y;
-        if (e.key === "ArrowLeft") item.x -= step;
-        else if (e.key === "ArrowRight") item.x += step;
-        else if (e.key === "ArrowUp") item.y -= step;
-        else if (e.key === "ArrowDown") item.y += step;
-        constrainFurnitureMove(item, data.rooms, prevX, prevY);
-      });
+    if (e.key === "ArrowLeft") {
+      item.x -= step;
+      changed = true;
+    } else if (e.key === "ArrowRight") {
+      item.x += step;
+      changed = true;
+    } else if (e.key === "ArrowUp") {
+      item.y -= step;
+      changed = true;
+    } else if (e.key === "ArrowDown") {
+      item.y += step;
       changed = true;
     } else if (e.key === "[" || e.key === "{") {
-      rotateSelectedFurniture(-5);
+      item.rotationDeg = (item.rotationDeg || 0) - 5;
       changed = true;
     } else if (e.key === "]" || e.key === "}") {
-      rotateSelectedFurniture(5);
+      item.rotationDeg = (item.rotationDeg || 0) + 5;
       changed = true;
     }
     if (changed) {
+      if (e.key.indexOf("Arrow") === 0) {
+        constrainFurnitureMove(item, data.rooms, prevX, prevY);
+      }
       render();
       e.preventDefault();
     }
@@ -1432,24 +1310,43 @@ export function initFloorPlanViewer() {
   plan.src = "/fixtures/reference-floor.png";
 
   function boot() {
-    loadFixture();
+    data.furniture_catalog = planCatalog.slice();
+    syncCatalogDrawerRows();
+    loadFixture()
+      .then(function () {
+        return preloadGlbTopDownIcons().catch(function () {});
+      })
+      .then(function () {
+        runAutoStage(true);
+      });
+  }
+
+  function loadCatalogsFromSupabase() {
+    return Promise.all([
+      fetchPlanCatalog(),
+      fetchShearlingCatalog().catch(function (err) {
+        console.warn("[catalog] shearling:", err && err.message ? err.message : err);
+        return [];
+      }),
+    ]).then(function (results) {
+      planCatalog = results[0];
+      shearlingCatalog = results[1];
+      var msg = "Catalog: " + planCatalog.length + " sets";
+      if (shearlingCatalog.length) msg += ", " + shearlingCatalog.length + " Shearling SKUs";
+      setLlmStatus(msg);
+    });
   }
 
   if (hasSb) {
-    fetchShearlingCatalog()
-      .then(function (catalog) {
-        shearlingCatalog = catalog;
-        data.furniture_catalog = catalog;
-        if (catalogDrawer) catalogDrawer.setCatalogRows(catalog);
-        setLlmStatus("Catalog: " + catalog.length + " Shearling SKUs loaded");
-        boot();
-      })
+    loadCatalogsFromSupabase()
+      .then(boot)
       .catch(function (err) {
         var msg = err && err.message ? err.message : String(err);
         setLlmStatus("Catalog error: " + msg);
         boot();
       });
   } else {
+    syncCatalogDrawerRows();
     boot();
   }
 }

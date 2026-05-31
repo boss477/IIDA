@@ -15,20 +15,42 @@ export const FLOORING_OPTIONS = [
   { value: "plain", label: "Plain / neutral" },
 ];
 
-export const WALL_COLOR_OPTIONS = [
-  { value: "warm-white", label: "Warm white" },
-  { value: "champagne", label: "Champagne" },
-  { value: "desert-sand", label: "Desert sand" },
-  { value: "warm-greige", label: "Warm greige" },
-  { value: "soft-sage", label: "Soft sage" },
-  { value: "eucalyptus", label: "Eucalyptus" },
-  { value: "sea-mist", label: "Sea mist" },
-  { value: "blush-rose", label: "Blush rose" },
-  { value: "terracotta", label: "Terracotta" },
-  { value: "deep-navy", label: "Deep navy" },
-  { value: "midnight-teal", label: "Midnight teal" },
-  { value: "charcoal-stone", label: "Charcoal stone" },
-];
+/** Premium interior paint presets — color hex + matte/satin roughness. */
+export const WALL_COLOR_PRESETS = {
+  "warm-white": { color: "#f5f2ec", roughness: 0.88, label: "Warm white" },
+  champagne: { color: "#f0e6d8", roughness: 0.87, label: "Champagne" },
+  "desert-sand": { color: "#e2d5c3", roughness: 0.9, label: "Desert sand" },
+  "warm-greige": { color: "#d9d2c8", roughness: 0.89, label: "Warm greige" },
+  "soft-sage": { color: "#c8d5c4", roughness: 0.86, label: "Soft sage" },
+  eucalyptus: { color: "#a8b8a8", roughness: 0.85, label: "Eucalyptus" },
+  "sea-mist": { color: "#d4e4e8", roughness: 0.86, label: "Sea mist" },
+  "blush-rose": { color: "#e8d4d0", roughness: 0.88, label: "Blush rose" },
+  terracotta: { color: "#c4a088", roughness: 0.84, label: "Terracotta" },
+  "deep-navy": { color: "#3d4f5f", roughness: 0.82, label: "Deep navy" },
+  "midnight-teal": { color: "#2c4a52", roughness: 0.8, label: "Midnight teal" },
+  "charcoal-stone": { color: "#6b6560", roughness: 0.83, label: "Charcoal stone" },
+};
+
+export const WALL_COLOR_OPTIONS = Object.keys(WALL_COLOR_PRESETS).map(function (id) {
+  return { value: id, label: WALL_COLOR_PRESETS[id].label };
+});
+
+export const WALL_COLOR_HEX = Object.keys(WALL_COLOR_PRESETS).reduce(function (acc, id) {
+  acc[id] = WALL_COLOR_PRESETS[id].color;
+  return acc;
+}, /** @type {Record<string, string>} */ ({}));
+
+/** @param {string} presetId */
+export function wallPresetHex(presetId) {
+  var p = WALL_COLOR_PRESETS[presetId] || WALL_COLOR_PRESETS["warm-white"];
+  return p.color;
+}
+
+/** @param {string} presetId */
+export function wallPresetRoughness(presetId) {
+  var p = WALL_COLOR_PRESETS[presetId] || WALL_COLOR_PRESETS["warm-white"];
+  return p.roughness;
+}
 
 var WALL_COLOR_BY_TYPE = {
   bedroom: "blush-rose",

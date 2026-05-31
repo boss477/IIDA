@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { WALL_COLOR_PRESETS } from "./planTools.js";
 
 var _disposables = [];
 
@@ -229,31 +230,23 @@ export function createFloorMaterial(flooring, repeat) {
   });
 }
 
-/** Premium interior paint presets (base hex + finish). */
-export var WALL_COLOR_PRESETS = {
-  "warm-white": { color: "#f5f2ec", roughness: 0.88 },
-  "soft-sage": { color: "#c8d5c4", roughness: 0.86 },
-  "desert-sand": { color: "#e2d5c3", roughness: 0.9 },
-  "champagne": { color: "#f0e6d8", roughness: 0.87 },
-  "blush-rose": { color: "#e8d4d0", roughness: 0.88 },
-  "warm-greige": { color: "#d9d2c8", roughness: 0.89 },
-  "terracotta": { color: "#c4a088", roughness: 0.84 },
-  "eucalyptus": { color: "#a8b8a8", roughness: 0.85 },
-  "sea-mist": { color: "#d4e4e8", roughness: 0.86 },
-  "deep-navy": { color: "#3d4f5f", roughness: 0.82 },
-  "midnight-teal": { color: "#2c4a52", roughness: 0.8 },
-  "charcoal-stone": { color: "#6b6560", roughness: 0.83 },
-};
-
 var _wallMatCache = {};
 
+function clearWallMaterialCache() {
+  Object.keys(_wallMatCache).forEach(function (key) {
+    if (_wallMatCache[key]) _wallMatCache[key].dispose();
+  });
+  _wallMatCache = {};
+}
+
+/** Cached prototype material per preset (clone for each wall segment). */
 export function getWallMaterial(presetId) {
   var id = presetId && WALL_COLOR_PRESETS[presetId] ? presetId : "warm-white";
   if (!_wallMatCache[id]) _wallMatCache[id] = createWallMaterial(id);
   return _wallMatCache[id];
 }
 
-/** Independent material instance per wall segment (avoids shared emissive/color). */
+/** Independent material instance per wall segment. */
 export function cloneWallMaterial(presetId) {
   return getWallMaterial(presetId).clone();
 }
@@ -264,13 +257,7 @@ export function getWallPresetHex(presetId) {
   return WALL_COLOR_PRESETS[id].color;
 }
 
-function clearWallMaterialCache() {
-  Object.keys(_wallMatCache).forEach(function (key) {
-    if (_wallMatCache[key]) _wallMatCache[key].dispose();
-  });
-  _wallMatCache = {};
-}
-
+/** Textured premium interior paint for a preset id. */
 export function createWallMaterial(presetId) {
   var id = presetId && WALL_COLOR_PRESETS[presetId] ? presetId : "warm-white";
   var preset = WALL_COLOR_PRESETS[id];

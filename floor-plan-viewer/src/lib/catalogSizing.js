@@ -38,15 +38,40 @@ export function mmToNormalized(mm, mmPerPixel, planDimPx) {
 
 function shapeFromCategory(category) {
   var c = String(category || "").toLowerCase();
+  if (c.indexOf("chair") >= 0 || c.indexOf("stool") >= 0 || c.indexOf("arm") >= 0) return "chair";
   if (c.indexOf("sofa") >= 0 || c.indexOf("lounge") >= 0) return "sofa";
-  if (c.indexOf("stool") >= 0 || c.indexOf("chair") >= 0 || c.indexOf("arm") >= 0) return "chair";
   if (c.indexOf("table") >= 0 || c.indexOf("dining") >= 0) return "table";
   return "chair";
 }
 
 export function isSofaCatalogRow(row) {
   if (!row) return false;
+  var ri = String(row.rich_icon || row.richIcon || "").toLowerCase();
+  if (ri.indexOf("sofa") >= 0) return true;
   return shapeFromCategory(row.category) === "sofa";
+}
+
+export function isChairCatalogRow(row) {
+  if (!row || isSofaCatalogRow(row)) return false;
+  var ri = String(row.rich_icon || row.richIcon || "").toLowerCase();
+  if (ri.indexOf("chair") >= 0) return true;
+  if (shapeFromCategory(row.category) === "chair") return true;
+  var k = String(row.keywords || row.product_name || row.name || "").toLowerCase();
+  return (
+    k.indexOf("chair") >= 0 ||
+    k.indexOf("stool") >= 0 ||
+    k.indexOf("armchair") >= 0 ||
+    k.indexOf("dining chair") >= 0
+  );
+}
+
+/** Shearling sofas, armchairs, stools, dining chairs, etc. */
+export function isSeatingCatalogRow(row) {
+  return isSofaCatalogRow(row) || isChairCatalogRow(row);
+}
+
+export function filterSeatingCatalog(catalog) {
+  return (catalog || []).filter(isSeatingCatalogRow);
 }
 
 export function parseSofaParams(keywords, productName) {
@@ -193,6 +218,7 @@ export function applyCatalogSkuToItem(item, catalogRow, ctx) {
 
   if (isSofaCatalogRow(catalogRow)) {
     item.sofaParams = parseSofaParams(catalogRow.keywords, catalogRow.product_name);
+    if (catalogRow.sofa_seats != null) item.sofaParams.seats = catalogRow.sofa_seats;
     if (item.sofaColorOverride) {
       item.sofaParams.color = item.sofaColorOverride;
     }
@@ -200,6 +226,22 @@ export function applyCatalogSkuToItem(item, catalogRow, ctx) {
     delete item.sofaParams;
     delete item.sofaColorOverride;
   }
+
+  var richIcon =
+    catalogRow.rich_icon ||
+    catalogRow.richIcon ||
+    (catalogRow.sofa_seats != null ? "sofa_" + catalogRow.sofa_seats : null);
+  if (richIcon) {
+    item.richIcon = richIcon;
+    item.type = richIcon;
+    item.shape = richIcon;
+    delete item.useGlbBake;
+    delete item.iconSource;
+  }
+  if (catalogRow.chair_count != null) item.chairCount = catalogRow.chair_count;
+  if (catalogRow.sofa_seats != null) item.sofaSeats = catalogRow.sofa_seats;
+  if (catalogRow.side_table_plant) item.sideTablePlant = true;
+  else if (catalogRow.side_table_plant === false) delete item.sideTablePlant;
 
   snapFurnitureFromWalls(item, ctx.walls || [], planW, planH, ctx.rooms || []);
   return item;
@@ -211,6 +253,16 @@ function itemWidthNorm(it) {
 
 function itemHeightNorm(it) {
   return it.height != null ? it.height : it.depth != null ? it.depth : itemWidthNorm(it);
+}
+
+/** Prefer selected SKU when it is seating; otherwise first sofa/chair in catalog. */
+export function findSeatingCatalogRow(catalog, preferId) {
+  var row = preferId ? catalogById(catalog, preferId) : null;
+  if (row && isSeatingCatalogRow(row)) return row;
+  for (var i = 0; i < (catalog || []).length; i++) {
+    if (isSeatingCatalogRow(catalog[i])) return catalog[i];
+  }
+  return null;
 }
 
 /** Prefer selected SKU when it is a sofa; otherwise first sofa in catalog. */

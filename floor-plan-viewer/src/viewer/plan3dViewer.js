@@ -32,16 +32,13 @@ import {
 } from "./plan3dGlb.js";
 import { normToWorld } from "./plan3dMove.js";
 import { getRoomMeasurementDisplay, resolveWallSegmentColor, setWallSegmentColor, wallSegmentKey } from "./planTools.js";
+import { mountWallPaintUi } from "./plan3dWallPaint.js";
 import {
   catalogRowForItem,
   getFurnitureMeasurementLines,
-  onMeasureUnitsChange,
-  setMeasureUnits,
 } from "./plan3dMeasure.js";
 import { createPlan3DMeasureOverlay } from "./plan3dMeasureOverlay.js";
-import { hideTooltip, showFurnitureTooltip, showRoomTooltip } from "./tooltip.js";
-import { createFurnitureToolbar3d } from "./furnitureToolbar3d.js";
-import { getWallPresetHex } from "./plan3dMaterials.js";
+import { hideTooltip, showMeasureTooltip, showRoomTooltip } from "./tooltip.js";
 
 var scene, camera, renderer, controls;
 var animFrameId;
@@ -55,16 +52,12 @@ var planToWorld = null;
 var sceneMetrics = { wReal: 10, hReal: 10 };
 var furnitureGroups = [];
 var roomFloorMeshes = [];
-var wallMeshes = [];
-var selectedWallMesh = null;
-var selectedWallSegmentKey = null;
-var wallSelectionHelper = null;
+var wallSegmentMeshes = [];
+var activePaintColor = "warm-white";
+var paintUi = null;
 var interaction = null;
 var measureOverlay = null;
 var onFurnitureMovedCb = null;
-var on3DFurnitureActionCb = null;
-var on3DFurnitureSelectCb = null;
-var furnitureToolbar3d = null;
 var selectedSideRoom = null;
 var hoveredSideRoom = null;
 var selectedRoomBounds = null;
@@ -155,6 +148,9 @@ export function init3D(container, data, planImage) {
     getRoomFloorMeshes: function () {
       return roomFloorMeshes;
     },
+    getWallSegmentMeshes: function () {
+      return wallSegmentMeshes;
+    },
     findRoomAtWorld: findRoomAtWorld,
     bounds: sceneBounds,
     wReal: sceneMetrics.wReal,
@@ -169,15 +165,32 @@ export function init3D(container, data, planImage) {
     onFurnitureHoverEnd: onFurnitureHoverEnd3D,
     onFurnitureSelect: onFurnitureSelect3D,
     onFurnitureDeselect: onFurnitureDeselect3D,
-    getWallMeshes: function () {
-      return wallMeshes;
-    },
-    onWallSelect: onWallSelect3D,
-    onWallDeselect: onWallDeselect3D,
     isSidePanelOpen: is3DSidePanelOpen,
     isSideRoomPickActive: isSideRoomPickActive,
     onFurnitureMoved: function (item) {
       if (onFurnitureMovedCb) onFurnitureMovedCb(item);
+    },
+    onWallPaint: function (segmentKey) {
+      applyPaintToSegment(segmentKey, activePaintColor);
+    },
+    onRoomPaint: function (room) {
+      applyPaintToRoom(room);
+    },
+  });
+
+  var existingPaint = document.getElementById("view3d-wall-paint");
+  if (existingPaint) {
+    var prev = existingPaint.previousElementSibling;
+    if (prev && prev.classList && prev.classList.contains("view3d-sep")) prev.remove();
+    existingPaint.remove();
+  }
+  paintUi = mountWallPaintUi({
+    onTogglePaint: toggle3DPaintMode,
+    onPickColor: function (presetId) {
+      activePaintColor = presetId;
+    },
+    getActiveColor: function () {
+      return activePaintColor;
     },
   });
 
@@ -189,19 +202,7 @@ export function init3D(container, data, planImage) {
     planToWorld: planToWorld,
   });
 
-  if (furnitureToolbar3d && furnitureToolbar3d.el.parentNode) {
-    furnitureToolbar3d.el.parentNode.removeChild(furnitureToolbar3d.el);
-  }
-  furnitureToolbar3d = createFurnitureToolbar3d(container, {
-    onAction: function (actionId) {
-      if (on3DFurnitureActionCb) on3DFurnitureActionCb(actionId);
-    },
-  });
-
-  onMeasureUnitsChange(refresh3DMeasureDisplay);
-
   set3dHint(default3dHintText());
-  sync3DWallSwatches();
   syncChromeActive(viewMode);
 
   function animate() {
@@ -209,14 +210,6 @@ export function init3D(container, data, planImage) {
     var transitioning = updateCameraTransition(camera);
     if (!transitioning && (!interaction || !interaction.isMoveMode())) controls.update();
     if (interaction) interaction.updateHelper();
-    if (wallSelectionHelper && selectedWallMesh) wallSelectionHelper.update();
-    if (furnitureToolbar3d && interaction) {
-      furnitureToolbar3d.updatePosition(
-        interaction.getSelected(),
-        camera,
-        renderer.domElement
-      );
-    }
     renderer.render(scene, camera);
     if (measureOverlay) measureOverlay.render();
   }
@@ -228,127 +221,6 @@ export function set3DFurnitureMovedCallback(cb) {
   onFurnitureMovedCb = cb;
 }
 
-/** @param {(itemId: string) => void} cb */
-export function set3DFurnitureSelectCallback(cb) {
-  on3DFurnitureSelectCb = cb;
-}
-
-/** @param {(actionId: string) => void} cb */
-export function set3DFurnitureActionCallback(cb) {
-  on3DFurnitureActionCb = cb;
-}
-
-function refresh3DMeasureDisplay() {
-  if (!interaction) return;
-  var grp = interaction.getSelected();
-  if (grp && measureOverlay) {
-    measureOverlay.updateForGroup(grp);
-    set3dHint(default3dHintText());
-  }
-}
-
-/** @param {"imperial"|"m"|"cm"} unit */
-export function set3DMeasureUnits(unit) {
-  setMeasureUnits(unit);
-  refresh3DMeasureDisplay();
-}
-
-/** @param {string} presetId */
-export function set3DWallColor(presetId) {
-  if (!activePlanData || !presetId || !selectedWallSegmentKey) return;
-  setWallSegmentColor(activePlanData, selectedWallSegmentKey, presetId);
-  if (selectedWallMesh) {
-    selectedWallMesh.material = cloneWallMaterial(presetId);
-    selectedWallMesh.userData.wallPreset = presetId;
-  } else {
-    rebuild3DScene();
-  }
-  closeWallPaintPanel();
-  deselectWallSegment();
-  set3dHint(default3dHintText());
-}
-
-function openWallPaintPanel() {
-  var paint = document.getElementById("view3d-wall-paint");
-  var palette = document.getElementById("view3d-wall-palette");
-  var toggle = document.getElementById("view3d-wall-toggle");
-  if (palette) palette.hidden = false;
-  if (toggle) toggle.setAttribute("aria-expanded", "true");
-  if (paint) paint.classList.add("view3d-wall-paint--open");
-}
-
-function closeWallPaintPanel() {
-  var paint = document.getElementById("view3d-wall-paint");
-  var palette = document.getElementById("view3d-wall-palette");
-  var toggle = document.getElementById("view3d-wall-toggle");
-  if (palette) palette.hidden = true;
-  if (toggle) toggle.setAttribute("aria-expanded", "false");
-  if (paint) paint.classList.remove("view3d-wall-paint--open");
-}
-
-export function sync3DWallSwatches() {
-  var toggle = document.getElementById("view3d-wall-toggle");
-  var palette = document.getElementById("view3d-wall-palette");
-  if (!palette) return;
-
-  var preset = null;
-  if (selectedWallSegmentKey && activePlanData) {
-    preset = resolveWallSegmentColor(
-      activePlanData,
-      selectedWallSegmentKey,
-      selectedWallMesh && selectedWallMesh.userData.room
-    );
-  }
-
-  if (toggle) {
-    if (preset && selectedWallSegmentKey) {
-      toggle.hidden = false;
-      toggle.style.background = getWallPresetHex(preset);
-      toggle.title = "Selected wall";
-    } else {
-      toggle.hidden = true;
-    }
-  }
-
-  palette.querySelectorAll(".wall-swatch[data-preset]").forEach(function (btn) {
-    var id = btn.getAttribute("data-preset");
-    btn.classList.toggle("wall-swatch--active", !!preset && id === preset);
-    btn.disabled = !selectedWallSegmentKey;
-  });
-}
-
-/** @deprecated use sync3DWallSwatches */
-export function sync3DWallColorSelect() {
-  sync3DWallSwatches();
-}
-
-export function rebuild3DScene(selectedItemId) {
-  if (!sceneContent || !activePlanData) return;
-  if (selectedItemId == null && interaction && interaction.getSelected()) {
-    var sel = interaction.getSelected().userData.furnitureItem;
-    if (sel) selectedItemId = sel.id;
-  }
-  buildSceneGeometry();
-  var restoreId = selectedItemId;
-  preloadDefaultSofaGlb()
-    .then(function () {
-      refreshSofaGlbMeshes();
-      if (restoreId) restore3DFurnitureSelection(restoreId);
-    })
-    .catch(function () {});
-}
-
-/** @param {string} itemId */
-export function restore3DFurnitureSelection(itemId) {
-  if (!interaction || !itemId) return;
-  var grp = null;
-  furnitureGroups.forEach(function (g) {
-    if (g.userData.furnitureItem && g.userData.furnitureItem.id === itemId) grp = g;
-  });
-  if (grp) interaction.select(grp);
-  else interaction.deselect();
-}
-
 export function toggle3DMoveMode() {
   if (!interaction) return false;
   if (interaction.isMoveMode()) {
@@ -357,12 +229,44 @@ export function toggle3DMoveMode() {
     syncChromeActive("dollhouse");
     return false;
   }
+  exit3DPaintMode();
   close3DSidePanel();
-  deselectWallSegment();
   interaction.enterMoveMode();
   set3dHint(default3dHintText());
   syncChromeActive("move");
   return true;
+}
+
+export function toggle3DPaintMode() {
+  if (!interaction) return false;
+  if (interaction.isPaintMode()) {
+    exit3DPaintMode();
+    syncChromeActive(viewMode);
+    return false;
+  }
+  exit3DMoveMode();
+  close3DSidePanel();
+  interaction.enterPaintMode();
+  if (paintUi) {
+    paintUi.setPaintActive(true);
+    paintUi.openPalette();
+  }
+  set3dHint("Pick a color · click a wall or room floor to paint");
+  syncChromeActive("paint");
+  return true;
+}
+
+export function exit3DPaintMode() {
+  if (interaction && interaction.isPaintMode()) {
+    interaction.exitPaintMode();
+  }
+  if (paintUi) {
+    paintUi.setPaintActive(false);
+    paintUi.closePalette();
+  }
+  if (!interaction || (!interaction.isMoveMode() && !interaction.isPaintMode())) {
+    set3dHint(default3dHintText());
+  }
 }
 
 export function exit3DMoveMode() {
@@ -383,10 +287,10 @@ function default3dHintText() {
   if (interaction && interaction.isMoveMode()) {
     return "Drag furniture · snaps to walls";
   }
-  if (selectedWallSegmentKey) {
-    return "Wall selected — pick a paint color";
+  if (interaction && interaction.isPaintMode()) {
+    return "Pick a color · click a wall or room floor to paint";
   }
-  return "Click a wall to paint · select furniture for actions";
+  return "Hover a room or furniture for measurements";
 }
 
 function furnitureMeasureLines(grp) {
@@ -438,26 +342,12 @@ function showRoomMeasureTooltip(room, e) {
 }
 
 function onRoomHoverGeneral(room, e) {
-  if (interaction && interaction.getSelected()) {
-    var selectedTip = document.getElementById("tip");
-    if (selectedTip) hideTooltip(selectedTip);
-    return;
-  }
-  if (viewMode === "side") {
-    var sideTip = document.getElementById("tip");
-    if (sideTip) hideTooltip(sideTip);
-    return;
-  }
   showRoomMeasureTooltip(room, e);
 }
 
 function onRoomHoverGeneralEnd() {
   if (interaction && interaction.getSelected()) return;
   var tip = document.getElementById("tip");
-  if (viewMode === "side") {
-    if (tip) hideTooltip(tip);
-    return;
-  }
   if (tip && !is3DSidePanelOpen()) hideTooltip(tip);
 }
 
@@ -465,7 +355,7 @@ function onFurnitureHover3D(grp, e) {
   var lines = furnitureMeasureLines(grp);
   var tip = document.getElementById("tip");
   if (!tip || !lines.length) return;
-  showFurnitureTooltip(tip, e, lines[0]);
+  showMeasureTooltip(tip, e, lines[0], lines.slice(1));
 }
 
 function onFurnitureHoverEnd3D() {
@@ -475,30 +365,21 @@ function onFurnitureHoverEnd3D() {
 }
 
 function onFurnitureSelect3D(grp) {
-  deselectWallSegment();
   if (measureOverlay) measureOverlay.updateForGroup(grp);
-  set3dHint(default3dHintText());
-  var item = grp && grp.userData ? grp.userData.furnitureItem : null;
-  if (item && on3DFurnitureSelectCb) on3DFurnitureSelectCb(item.id);
-  if (furnitureToolbar3d) {
-    furnitureToolbar3d.show(grp, { goesWithDisabled: true });
-    if (renderer && renderer.domElement) {
-      furnitureToolbar3d.updatePosition(grp, camera, renderer.domElement);
-    }
-  }
+  var lines = furnitureMeasureLines(grp);
+  set3dHint(lines.length ? lines.join("\n") : default3dHintText());
 }
 
 function onFurnitureDeselect3D() {
   if (measureOverlay) measureOverlay.clear();
-  if (furnitureToolbar3d) furnitureToolbar3d.hide();
   set3dHint(default3dHintText());
   var tip = document.getElementById("tip");
   if (tip) hideTooltip(tip);
 }
 
 function syncChromeActive(mode) {
-  var ids = ["btn3d-dollhouse", "btn3d-top", "btn3d-side", "btn3d-move"];
-  var modes = ["dollhouse", "top", "side", "move"];
+  var ids = ["btn3d-dollhouse", "btn3d-top", "btn3d-side", "btn3d-move", "btn3d-paint"];
+  var modes = ["dollhouse", "top", "side", "move", "paint"];
   ids.forEach(function (id, i) {
     var el = document.getElementById(id);
     if (el) el.classList.toggle("view3d-btn--active", modes[i] === mode);
@@ -529,6 +410,7 @@ export function toggle3DSidePanel() {
     return false;
   }
   exit3DMoveMode();
+  exit3DPaintMode();
   panel.hidden = false;
   if (containerEl) containerEl.classList.add("view3d-room-pick");
   syncChromeActive("side");
@@ -547,6 +429,7 @@ export function toggle3DSidePanel() {
 export function flyTo3DSideView(index) {
   if (!camera || !controls || !selectedRoomBounds) return;
   exit3DMoveMode();
+  exit3DPaintMode();
   activeSideIndex = index;
   flyToSideView(camera, controls, selectedRoomBounds, index, 800);
   if (controls) controls.enabled = false;
@@ -558,8 +441,6 @@ export function flyTo3DSideView(index) {
       card.classList.toggle("view3d-tcard--active", i === index);
     });
   }
-  var tip = document.getElementById("tip");
-  if (tip) hideTooltip(tip);
   close3DSidePanel();
 }
 
@@ -601,270 +482,6 @@ function clearSideRoomSelection() {
   updateRoomFloorHighlight(null, null);
   onSideRoomHoverEnd();
   if (interaction) interaction.setSidePickMode(false);
-  sync3DWallSwatches();
-}
-
-function clearWallHighlight() {
-  if (wallSelectionHelper) {
-    scene.remove(wallSelectionHelper);
-    wallSelectionHelper.geometry.dispose();
-    wallSelectionHelper = null;
-  }
-}
-
-function highlightWallMesh(mesh) {
-  clearWallHighlight();
-  if (!mesh || !scene) return;
-  wallSelectionHelper = new THREE.BoxHelper(mesh, 0x0ea5e9);
-  wallSelectionHelper.material.linewidth = 2;
-  scene.add(wallSelectionHelper);
-}
-
-function selectWallSegment(mesh) {
-  selectedWallMesh = mesh || null;
-  selectedWallSegmentKey = mesh && mesh.userData ? mesh.userData.segmentKey : null;
-  highlightWallMesh(selectedWallMesh);
-  document.body.classList.toggle("view3d-has-wall-selection", !!selectedWallSegmentKey);
-  if (selectedWallSegmentKey) openWallPaintPanel();
-  sync3DWallSwatches();
-}
-
-function deselectWallSegment() {
-  if (!selectedWallSegmentKey && !selectedWallMesh) {
-    closeWallPaintPanel();
-    return;
-  }
-  selectedWallMesh = null;
-  selectedWallSegmentKey = null;
-  clearWallHighlight();
-  closeWallPaintPanel();
-  document.body.classList.remove("view3d-has-wall-selection");
-  sync3DWallSwatches();
-}
-
-function onWallSelect3D(mesh) {
-  if (!mesh || !mesh.userData || !mesh.userData.isWall) return;
-  selectWallSegment(mesh);
-  set3dHint(default3dHintText());
-  var tip = document.getElementById("tip");
-  if (tip) hideTooltip(tip);
-}
-
-function onWallDeselect3D() {
-  deselectWallSegment();
-  set3dHint(default3dHintText());
-}
-
-function restoreWallSelectionAfterRebuild(prevKey) {
-  if (!prevKey) return;
-  var found = null;
-  for (var i = 0; i < wallMeshes.length; i++) {
-    if (wallMeshes[i].userData.segmentKey === prevKey) {
-      found = wallMeshes[i];
-      break;
-    }
-  }
-  if (found) {
-    selectedWallMesh = found;
-    selectedWallSegmentKey = prevKey;
-    highlightWallMesh(found);
-  } else {
-    selectedWallMesh = null;
-    selectedWallSegmentKey = null;
-  }
-  sync3DWallSwatches();
-}
-
-function findRoomForNormPoint(nx, ny) {
-  var rooms = (activePlanData && activePlanData.rooms) || [];
-  for (var i = 0; i < rooms.length; i++) {
-    var room = rooms[i];
-    if (room.polygon && room.polygon.length >= 3 && pointInPolygon({ x: nx, y: ny }, room.polygon)) {
-      return room;
-    }
-  }
-  return null;
-}
-
-function roomForWallSegment(p0, p1) {
-  if (!p0 || !p1) return null;
-  var mx = (p0.x + p1.x) / 2;
-  var my = (p0.y + p1.y) / 2;
-  var room = findRoomForNormPoint(mx, my);
-  if (room) return room;
-  var dx = p1.x - p0.x;
-  var dy = p1.y - p0.y;
-  var len = Math.hypot(dx, dy) || 1;
-  var ox = (-dy / len) * 0.003;
-  var oy = (dx / len) * 0.003;
-  return findRoomForNormPoint(mx + ox, my + oy) || findRoomForNormPoint(mx - ox, my - oy);
-}
-
-function roundNorm(v) {
-  return Math.round(v * 10000) / 10000;
-}
-
-/** Infinite line + interval for a normalized plan segment. */
-function segmentLineInfo(p0, p1) {
-  var dx = p1.x - p0.x;
-  var dy = p1.y - p0.y;
-  var len = Math.hypot(dx, dy);
-  if (len < 1e-8) return null;
-  var ux = dx / len;
-  var uy = dy / len;
-  var nx = -uy;
-  var ny = ux;
-  var d = nx * p0.x + ny * p0.y;
-  if (d < 0) {
-    nx = -nx;
-    ny = -ny;
-    d = -d;
-    ux = -ux;
-    uy = -uy;
-  }
-  var t0 = p0.x * ux + p0.y * uy;
-  var t1 = p1.x * ux + p1.y * uy;
-  return {
-    key: roundNorm(nx) + "," + roundNorm(ny) + "," + roundNorm(d),
-    ux: ux,
-    uy: uy,
-    nx: nx,
-    ny: ny,
-    d: d,
-    tMin: Math.min(t0, t1),
-    tMax: Math.max(t0, t1),
-  };
-}
-
-function normPointFromLine(line, t) {
-  return {
-    x: line.nx * line.d + line.ux * t,
-    y: line.ny * line.d + line.uy * t,
-  };
-}
-
-function resolveMergedWallPreset(contributors, data) {
-  var map = data && data.wallSegmentColors;
-  var i;
-  if (map) {
-    for (i = 0; i < contributors.length; i++) {
-      if (map[contributors[i].segmentKey]) return map[contributors[i].segmentKey];
-    }
-  }
-  var best = contributors[0];
-  var bestLen = 0;
-  for (i = 0; i < contributors.length; i++) {
-    var c = contributors[i];
-    var len = Math.hypot(c.p1.x - c.p0.x, c.p1.y - c.p0.y);
-    if (len > bestLen) {
-      bestLen = len;
-      best = c;
-    }
-  }
-  return resolveWallSegmentColor(data, best.segmentKey, best.room);
-}
-
-/**
- * Merge collinear wall segments on the same plane (adjacent rooms share edges
- * with different endpoint splits — causes z-fighting and color seams).
- * @param {object[]} walls
- * @param {object} data
- */
-function mergeWallSegmentsFromWalls(walls, data) {
-  var raw = [];
-  walls.forEach(function (wall, wallIndex) {
-    var pts = wall.points;
-    if (!pts || pts.length < 2) return;
-    var sourceId = wall.id ? "wall-" + wallIndex + "-" + wall.id : "wall-" + wallIndex;
-    for (var wi = 0; wi < pts.length - 1; wi++) {
-      var room = wall.room || roomForWallSegment(pts[wi], pts[wi + 1]);
-      var segmentKey = wallSegmentKey(sourceId, wi);
-      raw.push({
-        p0: pts[wi],
-        p1: pts[wi + 1],
-        room: room,
-        segmentKey: segmentKey,
-        info: segmentLineInfo(pts[wi], pts[wi + 1]),
-      });
-    }
-  });
-
-  var groups = {};
-  raw.forEach(function (seg) {
-    if (!seg.info) return;
-    if (!groups[seg.info.key]) {
-      groups[seg.info.key] = {
-        ux: seg.info.ux,
-        uy: seg.info.uy,
-        nx: seg.info.nx,
-        ny: seg.info.ny,
-        d: seg.info.d,
-        parts: [],
-      };
-    }
-    groups[seg.info.key].parts.push({
-      tMin: seg.info.tMin,
-      tMax: seg.info.tMax,
-      seg: seg,
-    });
-  });
-
-  var merged = [];
-  Object.keys(groups).forEach(function (key) {
-    var g = groups[key];
-    g.parts.sort(function (a, b) {
-      return a.tMin - b.tMin;
-    });
-    var cur = null;
-    g.parts.forEach(function (part) {
-      if (!cur) {
-        cur = { tMin: part.tMin, tMax: part.tMax, contributors: [part.seg] };
-        return;
-      }
-      if (part.tMin <= cur.tMax + 1e-5) {
-        cur.tMax = Math.max(cur.tMax, part.tMax);
-        cur.contributors.push(part.seg);
-      } else {
-        merged.push(buildMergedWallSegment(g, cur, data));
-        cur = { tMin: part.tMin, tMax: part.tMax, contributors: [part.seg] };
-      }
-    });
-    if (cur) merged.push(buildMergedWallSegment(g, cur, data));
-  });
-  return { rawCount: raw.length, merged: merged };
-}
-
-function buildMergedWallSegment(line, interval, data) {
-  var contributors = interval.contributors;
-  var primary = contributors[0];
-  var presetId = resolveMergedWallPreset(contributors, data);
-  return {
-    p0: normPointFromLine(line, interval.tMin),
-    p1: normPointFromLine(line, interval.tMax),
-    room: primary.room,
-    segmentKey: primary.segmentKey,
-    presetId: presetId,
-  };
-}
-
-function addWallSegment(w1, w2, thick, wallHeight, wallMat, parent, meta) {
-  var dx = w2.x - w1.x;
-  var dz = w2.z - w1.z;
-  var len = Math.hypot(dx, dz);
-  if (len < 0.01) return null;
-  var wallGeo = new THREE.BoxGeometry(len, wallHeight, thick);
-  var wallMesh = new THREE.Mesh(wallGeo, wallMat);
-  wallMesh.position.set((w1.x + w2.x) / 2, wallHeight / 2, (w1.z + w2.z) / 2);
-  wallMesh.rotation.y = -Math.atan2(dz, dx);
-  wallMesh.castShadow = true;
-  wallMesh.receiveShadow = true;
-  wallMesh.userData.isWall = true;
-  wallMesh.userData.segmentKey = meta && meta.segmentKey ? meta.segmentKey : "";
-  wallMesh.userData.wallPreset = meta && meta.presetId ? meta.presetId : "warm-white";
-  wallMesh.userData.room = meta && meta.room ? meta.room : null;
-  parent.add(wallMesh);
-  wallMeshes.push(wallMesh);
-  return wallMesh;
 }
 
 function updateRoomFloorHighlight() {
@@ -928,8 +545,6 @@ function selectSideRoom(room) {
   buildSideThumbnails(room);
   if (interaction) interaction.setSidePickMode(false);
   set3dHint(roomLabel(room) + " — pick a side view");
-  deselectWallSegment();
-  sync3DWallSwatches();
   var panel = document.getElementById("view3d-side-panel");
   if (panel) panel.hidden = false;
   syncChromeActive("side");
@@ -995,6 +610,7 @@ export function set3DViewMode(mode) {
   close3DSidePanel();
   clearSideRoomSelection();
   exit3DMoveMode();
+  exit3DPaintMode();
   viewMode = mode === "top" ? "top" : "dollhouse";
   syncChromeActive(viewMode);
   if (!camera || !controls || !sceneBounds) return;
@@ -1009,11 +625,18 @@ export function dispose3D() {
   cancelCameraTransition();
   close3DSidePanel();
   exit3DMoveMode();
+  exit3DPaintMode();
   clearSideRoomSelection();
-  clearWallHighlight();
-  deselectWallSegment();
-  wallMeshes = [];
   roomFloorMeshes = [];
+  wallSegmentMeshes = [];
+  var existingPaint = document.getElementById("view3d-wall-paint");
+  if (existingPaint) {
+    if (existingPaint.previousElementSibling && existingPaint.previousElementSibling.classList.contains("view3d-sep")) {
+      existingPaint.previousElementSibling.remove();
+    }
+    existingPaint.remove();
+  }
+  paintUi = null;
   if (measureOverlay) {
     measureOverlay.dispose();
     measureOverlay = null;
@@ -1021,10 +644,6 @@ export function dispose3D() {
   if (interaction) {
     interaction.dispose();
     interaction = null;
-  }
-  if (furnitureToolbar3d) {
-    furnitureToolbar3d.hide();
-    furnitureToolbar3d = null;
   }
   furnitureGroups = [];
   if (animFrameId) {
@@ -1146,8 +765,6 @@ function addRoomWindow(room, toWorld, wallHeight, matFr, matG, parent) {
 function buildSceneGeometry() {
   if (!activePlanData || !sceneContent) return;
 
-  var prevWallKey = selectedWallSegmentKey;
-
   disposeSceneGraph(sceneContent);
   while (sceneContent.children.length) sceneContent.remove(sceneContent.children[0]);
 
@@ -1174,12 +791,11 @@ function buildSceneGeometry() {
   sceneBounds = computeSceneBounds(activePlanData.rooms || [], toWorld);
   furnitureGroups = [];
   roomFloorMeshes = [];
-  wallMeshes = [];
+  wallSegmentMeshes = [];
 
   var matFr = createWindowFrameMaterial();
   var matG = createGlassMaterial();
   var wallHeight = 2.7;
-  var defaultThick = 0.006 * Math.max(imgW, imgH) * mpp;
 
   (activePlanData.rooms || []).forEach(function (room) {
     if (!room.polygon || room.polygon.length < 3) return;
@@ -1210,34 +826,61 @@ function buildSceneGeometry() {
 
   var walls = (activePlanData.walls || []).slice();
   if (walls.length === 0 && activePlanData.rooms && activePlanData.rooms.length) {
-    activePlanData.rooms.forEach(function (r, ri) {
+    activePlanData.rooms.forEach(function (r) {
       if (r.polygon && r.polygon.length >= 3) {
         var pts = r.polygon.map(function (p) {
           return { x: p.x, y: p.y };
         });
         pts.push({ x: pts[0].x, y: pts[0].y });
         walls.push({
+          id: "wall-from-" + (r.id || "room"),
+          roomId: r.id,
           points: pts,
           thickness: 0.006,
-          room: r,
-          id: "room-" + ri + "-outline",
         });
       }
     });
   }
 
-  var wallMerge = mergeWallSegmentsFromWalls(walls, activePlanData);
+  walls.forEach(function (wall, wallIdx) {
+    var pts = wall.points;
+    if (!pts || pts.length < 2) return;
+    var thick = (wall.thickness || 0.006) * Math.max(imgW, imgH) * mpp;
+    var wallId = wall.id || "wall-" + wallIdx;
 
-  wallMerge.merged.forEach(function (seg) {
-    var thick = defaultThick;
-    var wallMat = cloneWallMaterial(seg.presetId);
-    var w1 = toWorld(seg.p0);
-    var w2 = toWorld(seg.p1);
-    addWallSegment(w1, w2, thick, wallHeight, wallMat, sceneContent, {
-      segmentKey: seg.segmentKey,
-      presetId: seg.presetId,
-      room: seg.room,
-    });
+    for (var wi = 0; wi < pts.length - 1; wi++) {
+      var w1 = toWorld(pts[wi]);
+      var w2 = toWorld(pts[wi + 1]);
+
+      var dx = w2.x - w1.x;
+      var dz = w2.z - w1.z;
+      var len = Math.hypot(dx, dz);
+      if (len < 0.01) continue;
+
+      var midNorm = {
+        x: (pts[wi].x + pts[wi + 1].x) / 2,
+        y: (pts[wi].y + pts[wi + 1].y) / 2,
+      };
+      var room = findRoomForWall(wall) || findRoomForWallPoint(midNorm);
+      var segKey = wallSegmentKey(wallId, wi);
+      var preset = resolveWallSegmentColor(activePlanData, segKey, room);
+      var segMat = cloneWallMaterial(preset);
+
+      var wallGeo = new THREE.BoxGeometry(len, wallHeight, thick);
+      var wallMesh = new THREE.Mesh(wallGeo, segMat);
+      var midX = (w1.x + w2.x) / 2;
+      var midZ = (w1.z + w2.z) / 2;
+      wallMesh.position.set(midX, wallHeight / 2, midZ);
+      wallMesh.rotation.y = -Math.atan2(dz, dx);
+      wallMesh.castShadow = true;
+      wallMesh.receiveShadow = true;
+      wallMesh.userData.isWallSegment = true;
+      wallMesh.userData.segmentKey = segKey;
+      wallMesh.userData.presetId = preset;
+      wallMesh.userData.room = room;
+      wallSegmentMeshes.push(wallMesh);
+      sceneContent.add(wallMesh);
+    }
   });
 
   var hasSofaOnPlan = false;
@@ -1248,8 +891,44 @@ function buildSceneGeometry() {
   });
 
   if (!hasSofaOnPlan) addDefaultLivingRoomSofa(wReal, hReal);
+}
 
-  restoreWallSelectionAfterRebuild(prevWallKey);
+function findRoomForWall(wall) {
+  if (!wall || !wall.roomId || !activePlanData) return null;
+  var rooms = activePlanData.rooms || [];
+  for (var i = 0; i < rooms.length; i++) {
+    if (rooms[i].id === wall.roomId) return rooms[i];
+  }
+  return null;
+}
+
+function findRoomForWallPoint(normPt) {
+  if (!normPt || !activePlanData) return null;
+  var rooms = activePlanData.rooms || [];
+  for (var i = 0; i < rooms.length; i++) {
+    if (rooms[i].polygon && pointInPolygon(normPt, rooms[i].polygon)) return rooms[i];
+  }
+  return null;
+}
+
+function applyPaintToSegment(segmentKey, presetId) {
+  if (!segmentKey || !presetId || !activePlanData) return;
+  setWallSegmentColor(activePlanData, segmentKey, presetId);
+  wallSegmentMeshes.forEach(function (mesh) {
+    if (mesh.userData.segmentKey === segmentKey) {
+      mesh.material = cloneWallMaterial(presetId);
+      mesh.userData.presetId = presetId;
+    }
+  });
+}
+
+function applyPaintToRoom(room) {
+  if (!room) return;
+  wallSegmentMeshes.forEach(function (mesh) {
+    if (mesh.userData.room && mesh.userData.room.id === room.id) {
+      applyPaintToSegment(mesh.userData.segmentKey, activePaintColor);
+    }
+  });
 }
 
 function furnitureDimsForItem(item, catalogRow, wReal, hReal) {
@@ -1280,9 +959,11 @@ function furnitureTypeStr(item, catalogRow) {
   var parts = [
     item.type,
     item.shape,
+    item.richIcon,
     item.catalogId,
     item.id,
     catalogRow && catalogRow.shape,
+    catalogRow && catalogRow.rich_icon,
     catalogRow && catalogRow.category,
     catalogRow && catalogRow.product_name,
     catalogRow && catalogRow.name,
@@ -1294,9 +975,21 @@ function furnitureTypeStr(item, catalogRow) {
   return typeStr;
 }
 
+/** Rugs are 2D SVG only — skip in dollhouse / 3D view. */
+function is2dOnlyFurniture(item, catalogRow) {
+  if (!item) return false;
+  if (item.richIcon === "area_rug") return true;
+  if (String(item.type || "").toLowerCase() === "area_rug") return true;
+  if (item.catalogId === "cat-rug") return true;
+  if (catalogRow && catalogRow.rich_icon === "area_rug") return true;
+  var typeStr = furnitureTypeStr(item, catalogRow);
+  return typeStr.indexOf("area_rug") >= 0 || typeStr.indexOf("area rug") >= 0;
+}
+
 function addFurnitureGroup(item, wReal, hReal) {
   var catalog = activePlanData.furniture_catalog || [];
   var catalogRow = catalogById(catalog, item.catalogId);
+  if (is2dOnlyFurniture(item, catalogRow)) return null;
   var dims = furnitureDimsForItem(item, catalogRow, wReal, hReal);
   var typeStr = furnitureTypeStr(item, catalogRow);
 

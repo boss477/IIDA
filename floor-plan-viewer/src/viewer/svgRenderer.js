@@ -14,8 +14,9 @@ import {
   renderVertexHandles,
   renderWallVertexHandles,
 } from "./geometryOverlays.js";
-import { getSofaPalette } from "../lib/sofaColors.js";
 import { ensurePhotoFloorPatterns, photoPatternForRoom } from "./floorPhotoTextures.js";
+import { appendFurniture2dIcon } from "./furniture2dRender.js";
+import { appendRichAreaRug, ensureRichFurnitureDefs } from "./richFurnitureIcons.js";
 
 const NS = "http://www.w3.org/2000/svg";
 
@@ -44,6 +45,7 @@ function createDefs(svg) {
     svg.appendChild(defs);
   }
   ensurePhotoFloorPatterns(defs);
+  ensureRichFurnitureDefs(defs);
 }
 
 function patternForRoom(room) {
@@ -370,6 +372,9 @@ function furnitureRotation(item) {
 
 function furnitureSize(item, size, renderCtx) {
   renderCtx = renderCtx || {};
+  if (item.width != null && item.height != null) {
+    return { w: item.width * size.width, h: item.height * size.height };
+  }
   var catalog = renderCtx.furnitureCatalog || [];
   var row = catalogById(catalog, item.catalogId);
   var ctx = {
@@ -428,6 +433,7 @@ function renderGroupConnectors(svg, furniture, size, renderCtx) {
 }
 
 function renderDetailedFurniture(svg, furniture, catalog, selectedIds, primaryId, size, renderCtx) {
+  var defs = svg.querySelector("defs");
   renderGroupConnectors(svg, furniture, size, renderCtx);
   (furniture || [])
     .slice()
@@ -454,28 +460,12 @@ function renderDetailedFurniture(svg, furniture, catalog, selectedIds, primaryId
         transform: "translate(" + cx + " " + cy + ") rotate(" + furnitureRotation(item) + ")",
       });
 
-      if (type.indexOf("bed") >= 0) renderBed(g, box.w, box.h);
-      else if (type.indexOf("sofa") >= 0 || type.indexOf("lounge") >= 0 || type.indexOf("sectional") >= 0) {
-        var sofaOpts = item.sofaParams;
-        if (!sofaOpts) {
-          sofaOpts = parseSofaParams(
-            (catalogRow && catalogRow.keywords) || item.keywords,
-            (catalogRow && catalogRow.product_name) || item.product_name
-          );
-        }
-        if (type.indexOf("sectional") >= 0 && !sofaOpts.hasLounge) sofaOpts.hasLounge = true;
-        renderSofa(g, box.w, box.h, sofaOpts);
+      if (type.indexOf("rug") >= 0 || item.richIcon === "area_rug") {
+        ensureRichFurnitureDefs(defs);
+        appendRichAreaRug(g, box.w, box.h);
+      } else {
+        appendFurniture2dIcon(g, item, box, catalogRow, defs);
       }
-      else if (type.indexOf("dining") >= 0 || type.indexOf("table") >= 0) renderTable(g, box.w, box.h, item.chairs || 4);
-      else if (type.indexOf("chair") >= 0) renderChair(g, box.w, box.h);
-      else if (type.indexOf("kitchen") >= 0 || type.indexOf("island") >= 0 || type.indexOf("counter") >= 0) renderKitchenIsland(g, box.w, box.h);
-      else if (type.indexOf("tub") >= 0 || type.indexOf("bathtub") >= 0) renderBathtub(g, box.w, box.h);
-      else if (type.indexOf("toilet") >= 0 || type.indexOf("wc") >= 0) renderToilet(g, box.w, box.h);
-      else if (type.indexOf("sink") >= 0 || type.indexOf("basin") >= 0) renderSink(g, box.w, box.h);
-      else if (type.indexOf("desk") >= 0 || type.indexOf("office") >= 0) renderDesk(g, box.w, box.h);
-      else if (type.indexOf("plant") >= 0 || type.indexOf("tree") >= 0) renderPlant(g, box.w, box.h);
-      else if (type.indexOf("rug") >= 0) renderRugItem(g, box.w, box.h);
-      else g.appendChild(setAttrs(svgEl("rect"), { x: -box.w / 2, y: -box.h / 2, width: box.w, height: box.h, fill: "#dddddd", stroke: "#999999", rx: 2 }));
 
       if (selected) {
         g.appendChild(
